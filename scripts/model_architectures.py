@@ -1,6 +1,5 @@
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
 
 
 class SimpleCNN(nn.Module):
@@ -29,6 +28,7 @@ class SimpleCNN(nn.Module):
         x = self.dropout(F.relu(self.fc1(x)))
         x = self.fc2(x)
         return x
+
 
 def create_model(num_classes, device):
     """Create and initialize the model"""

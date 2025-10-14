@@ -3,9 +3,9 @@ import random
 from pathlib import Path
 from typing import List, Tuple
 
+import albumentations as A
 import numpy as np
 import torch
-import albumentations as A
 from PIL import Image
 
 # Configure logging

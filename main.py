@@ -5,41 +5,43 @@ import argparse
 import logging
 import os
 import random
-import numpy as np
 
+import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
 from torchvision import datasets
 
-# Import our custom modules
-from scripts.data_download import download_and_extract_cifar10_data, download_and_extract_cifar100_data
 from scripts.data_augmentation import augment_dataset
-from scripts.model_architectures import create_model
-from scripts.train_utils import (
-    save_metrics,
-    train_epoch,
-    validate_epoch,
-    save_checkpoint,
-    define_loss_and_optimizer,
-    load_data,
-    load_transforms,
+
+# Import our custom modules
+from scripts.data_download import (
+    download_and_extract_cifar10_data,
+    download_and_extract_cifar100_data,
 )
 from scripts.evaluation_metrics import (
     evaluate_model,
+)
+from scripts.model_architectures import create_model
+from scripts.train_utils import (
+    define_loss_and_optimizer,
+    load_data,
+    load_transforms,
+    save_checkpoint,
+    save_metrics,
+    train_epoch,
+    validate_epoch,
 )
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("cifar_pipeline.log")
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("cifar_pipeline.log")],
 )
 logger = logging.getLogger(__name__)
+
 
 def set_random_seeds(seed):
     random.seed(seed)
@@ -52,51 +54,74 @@ def set_random_seeds(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="CIFAR-10/100 Training Pipeline")
 
     # Dataset selection
-    parser.add_argument("--dataset", type=str, choices=["cifar10", "cifar100"], default="cifar10",
-                        help="Dataset to use (cifar10 or cifar100)")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        choices=["cifar10", "cifar100"],
+        default="cifar10",
+        help="Dataset to use (cifar10 or cifar100)",
+    )
 
     # Data paths
-    parser.add_argument("--data_dir", type=str, default="data",
-                        help="Base directory for data storage")
-    parser.add_argument("--output_dir", type=str, default="results",
-                        help="Directory to save results")
+    parser.add_argument(
+        "--data_dir", type=str, default="data", help="Base directory for data storage"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default="results", help="Directory to save results"
+    )
 
     # Data augmentation
-    parser.add_argument("--aug_count", type=int, default=3,
-                        help="Number of augmentations per image")
+    parser.add_argument(
+        "--aug_count", type=int, default=3, help="Number of augmentations per image"
+    )
 
     # Training parameters
-    parser.add_argument("--batch_size", type=int, default=128,
-                        help="Batch size for training")
-    parser.add_argument("--num_epochs", type=int, default=30,
-                        help="Number of training epochs")
-    parser.add_argument("--lr", type=float, default=0.001,
-                        help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4,
-                        help="Weight decay (L2 penalty)")
+    parser.add_argument(
+        "--batch_size", type=int, default=128, help="Batch size for training"
+    )
+    parser.add_argument(
+        "--num_epochs", type=int, default=30, help="Number of training epochs"
+    )
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    parser.add_argument(
+        "--weight_decay", type=float, default=1e-4, help="Weight decay (L2 penalty)"
+    )
 
     # Checkpointing
-    parser.add_argument("--save_freq", type=int, default=1,
-                        help="Save checkpoint every N epochs")
-    parser.add_argument("--early_stopping_patience", type=int, default=10,
-                        help="Early stopping patience")
+    parser.add_argument(
+        "--save_freq", type=int, default=1, help="Save checkpoint every N epochs"
+    )
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=10,
+        help="Early stopping patience",
+    )
 
     # Hardware
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
-                        help="Device to use for training (cuda/cpu)")
-    parser.add_argument("--num_workers", type=int, default=4,
-                        help="Number of data loading workers")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device to use for training (cuda/cpu)",
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=4, help="Number of data loading workers"
+    )
 
     # Random seeds
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducibility")
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
+    )
 
     return parser.parse_args()
+
 
 def collect_data(args):
     """Collect data"""
@@ -116,12 +141,13 @@ def collect_data(args):
             root_dir=args.data_dir + "/raw",
         )
 
+
 def augment_data(args):
     """Prepare and augment data"""
     logger.info(f"Augmenting {args.dataset} dataset...")
 
-    raw_data_dir = args.data_dir + '/raw/train/'
-    augmented_data_dir = args.data_dir + '/augmented/train/'
+    raw_data_dir = args.data_dir + "/raw/train/"
+    augmented_data_dir = args.data_dir + "/augmented/train/"
     augmentations_per_image = args.aug_count
 
     # --- Path Validation ---
@@ -140,13 +166,14 @@ def augment_data(args):
         augment_dataset(
             input_dir=raw_data_dir,
             output_dir=augmented_data_dir,
-            augmentations_per_image=augmentations_per_image
+            augmentations_per_image=augmentations_per_image,
         )
         print("\n🎉 Data augmentation completed successfully!")
     else:
         print("Skipping augmentation process due to missing raw data directory.")
 
     return augmented_data_dir
+
 
 def build_model(args):
     """Build the model"""
@@ -158,9 +185,12 @@ def build_model(args):
     model = create_model(num_classes=num_classes, device=args.device)
     return model
 
+
 def train(args, model: nn.Module):
     # Define loss and optimizer
-    criterion, optimizer, scheduler = define_loss_and_optimizer(model, args.lr, args.weight_decay)
+    criterion, optimizer, scheduler = define_loss_and_optimizer(
+        model, args.lr, args.weight_decay
+    )
 
     # Initialize tracking variables
     best_val_loss = float("inf")
@@ -176,10 +206,14 @@ def train(args, model: nn.Module):
     os.makedirs(args.output_dir + "/models", exist_ok=True)
     os.makedirs(args.output_dir + "/results", exist_ok=True)
 
-    print(f"Training configured for {args.num_epochs} epochs with early stopping patience of {args.early_stopping_patience}.")
+    print(
+        f"Training configured for {args.num_epochs} epochs with early stopping patience of {args.early_stopping_patience}."
+    )
 
     # Load data
-    train_loader, val_loader = load_data(args.data_dir + "/augmented/train", args.batch_size)
+    train_loader, val_loader = load_data(
+        args.data_dir + "/augmented/train", args.batch_size
+    )
 
     print("Starting training...")
     for epoch in range(args.num_epochs):
@@ -241,20 +275,30 @@ def train(args, model: nn.Module):
     best_epoch = checkpoint["epoch"]
     best_val_loss_loaded = checkpoint["best_val_loss"]
 
-    print(f"Loaded best model from epoch {best_epoch} with validation loss {best_val_loss_loaded:.4f}")
+    print(
+        f"Loaded best model from epoch {best_epoch} with validation loss {best_val_loss_loaded:.4f}"
+    )
 
     # Save the final model's state_dict for easy use in evaluation/inference
     torch.save(model.state_dict(), args.output_dir + "/models/final_model.pth")
-    print(f"Final model state_dict saved to '{args.output_dir}/models/final_model.pth'.")
+    print(
+        f"Final model state_dict saved to '{args.output_dir}/models/final_model.pth'."
+    )
 
     return model, best_val_loss
+
 
 def evaluate(args, model: nn.Module):
     """Evaluate the model on test data"""
     # Load the test dataset from the specified directory
     test_data_dir = args.data_dir + "/raw/test"
     test_dataset = datasets.ImageFolder(root=test_data_dir, transform=load_transforms())
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+    )
 
     # Set the model to evaluation mode
     model.eval()
@@ -266,9 +310,12 @@ def evaluate(args, model: nn.Module):
     test_loss, test_accuracy, all_preds, all_labels, all_probs = evaluate_model(
         model, test_loader, criterion, args.device
     )
-    metrics_str = classification_report(all_labels, all_preds, target_names=test_dataset.classes)
+    metrics_str = classification_report(
+        all_labels, all_preds, target_names=test_dataset.classes
+    )
 
     save_metrics(metrics_str)
+
 
 def main():
     """Main function"""
@@ -293,6 +340,7 @@ def main():
     train(args, model)
     # Evaluate
     evaluate(args, model)
+
 
 if __name__ == "__main__":
     main()

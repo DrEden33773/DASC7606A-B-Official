@@ -170,37 +170,130 @@ class CIFAR10Downloader:
 class CIFAR100Downloader:
     """
     A configurable class to download and prepare the CIFAR-100 dataset.
-    
+
     Supports custom root directories, transforms, and verbose reporting.
     Also supports saving images to organized train/test/classname folders.
     """
-    
+
     # CIFAR-100 has 100 fine-grained classes
     CLASS_NAMES = [
-        "apple", "aquarium_fish", "baby", "bear", "beaver", "bed", "bee", "beetle", 
-        "bicycle", "bottle", "bowl", "boy", "bridge", "bus", "butterfly", "camel", 
-        "can", "castle", "caterpillar", "cattle", "chair", "chimpanzee", "clock", 
-        "cloud", "cockroach", "couch", "crab", "crocodile", "cup", "dinosaur", 
-        "dolphin", "elephant", "flatfish", "forest", "fox", "girl", "hamster", 
-        "house", "kangaroo", "keyboard", "lamp", "lawn_mower", "leopard", "lion", 
-        "lizard", "lobster", "man", "maple_tree", "motorcycle", "mountain", "mouse", 
-        "mushroom", "oak_tree", "orange", "orchid", "otter", "palm_tree", "pear", 
-        "pickup_truck", "pine_tree", "plain", "plate", "poppy", "porcupine", 
-        "possum", "rabbit", "raccoon", "ray", "road", "rocket", "rose", "sea", 
-        "seal", "shark", "shrew", "skunk", "skyscraper", "snail", "snake", "spider", 
-        "squirrel", "streetcar", "sunflower", "sweet_pepper", "table", "tank", 
-        "telephone", "television", "tiger", "tractor", "train", "trout", "tulip", 
-        "turtle", "wardrobe", "whale", "willow_tree", "wolf", "woman", "worm"
+        "apple",
+        "aquarium_fish",
+        "baby",
+        "bear",
+        "beaver",
+        "bed",
+        "bee",
+        "beetle",
+        "bicycle",
+        "bottle",
+        "bowl",
+        "boy",
+        "bridge",
+        "bus",
+        "butterfly",
+        "camel",
+        "can",
+        "castle",
+        "caterpillar",
+        "cattle",
+        "chair",
+        "chimpanzee",
+        "clock",
+        "cloud",
+        "cockroach",
+        "couch",
+        "crab",
+        "crocodile",
+        "cup",
+        "dinosaur",
+        "dolphin",
+        "elephant",
+        "flatfish",
+        "forest",
+        "fox",
+        "girl",
+        "hamster",
+        "house",
+        "kangaroo",
+        "keyboard",
+        "lamp",
+        "lawn_mower",
+        "leopard",
+        "lion",
+        "lizard",
+        "lobster",
+        "man",
+        "maple_tree",
+        "motorcycle",
+        "mountain",
+        "mouse",
+        "mushroom",
+        "oak_tree",
+        "orange",
+        "orchid",
+        "otter",
+        "palm_tree",
+        "pear",
+        "pickup_truck",
+        "pine_tree",
+        "plain",
+        "plate",
+        "poppy",
+        "porcupine",
+        "possum",
+        "rabbit",
+        "raccoon",
+        "ray",
+        "road",
+        "rocket",
+        "rose",
+        "sea",
+        "seal",
+        "shark",
+        "shrew",
+        "skunk",
+        "skyscraper",
+        "snail",
+        "snake",
+        "spider",
+        "squirrel",
+        "streetcar",
+        "sunflower",
+        "sweet_pepper",
+        "table",
+        "tank",
+        "telephone",
+        "television",
+        "tiger",
+        "tractor",
+        "train",
+        "trout",
+        "tulip",
+        "turtle",
+        "wardrobe",
+        "whale",
+        "willow_tree",
+        "wolf",
+        "woman",
+        "worm",
     ]
-    def __init__(self, root_dir: str = "data/raw", transform: Optional[transforms.Compose] = None, download: bool = True, log_stats: bool = True):
+
+    def __init__(
+        self,
+        root_dir: str = "data/raw",
+        transform: Optional[transforms.Compose] = None,
+        download: bool = True,
+        log_stats: bool = True,
+    ):
         self.root_dir = Path(root_dir)
         self.transform = transform or self._get_default_transform()
         self.download = download
         self.log_stats = log_stats
-        
+
         # Ensure base directory exists
         self.root_dir.mkdir(parents=True, exist_ok=True)
-        
+
     @staticmethod
     def _get_default_transform() -> transforms.Compose:
         """Return default transform: ToTensor + Normalize to [-1, 1]."""
@@ -210,14 +303,14 @@ class CIFAR100Downloader:
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
-        
+
     def load_datasets(self) -> Tuple[CIFAR100, CIFAR100]:
         """
         Load CIFAR-100 train and test datasets.
-        
+
         Returns:
             Tuple of (train_dataset, test_dataset)
-            
+
         Raises:
             RuntimeError: If dataset fails to download or load.
         """
@@ -229,7 +322,7 @@ class CIFAR100Downloader:
                 download=self.download,
                 transform=self.transform,
             )
-            
+
             logger.info("Loading CIFAR-100 test dataset...")
             test_dataset = CIFAR100(
                 root=str(self.root_dir),
@@ -237,20 +330,22 @@ class CIFAR100Downloader:
                 download=self.download,
                 transform=self.transform,
             )
-            
+
         except Exception as e:
             raise RuntimeError(f"Failed to load CIFAR-100 dataset: {e}") from e
-            
+
         if self.log_stats:
             self._log_dataset_stats(train_dataset, test_dataset)
-            
+
         return train_dataset, test_dataset
-        
-    def _log_dataset_stats(self, train_dataset: CIFAR100, test_dataset: CIFAR100) -> None:
+
+    def _log_dataset_stats(
+        self, train_dataset: CIFAR100, test_dataset: CIFAR100
+    ) -> None:
         """Log formatted dataset statistics."""
         total = len(train_dataset) + len(test_dataset)
         separator = "=" * 50
-        
+
         logger.info("\n" + separator)
         logger.info("✅ CIFAR-100 Dataset Loaded Successfully!")
         logger.info(separator)
@@ -263,13 +358,15 @@ class CIFAR100Downloader:
         logger.info(f"   • Number of classes: {len(self.CLASS_NAMES)}")
         logger.info("   • Classes: Too many to list (100 classes)")
         logger.info(separator)
-        
-    def save_images_to_folders(self, train_dataset: CIFAR100, test_dataset: CIFAR100) -> None:
+
+    def save_images_to_folders(
+        self, train_dataset: CIFAR100, test_dataset: CIFAR100
+    ) -> None:
         """
         Save CIFAR-100 images as PNG files into organized folders:
         - raw/train/<class_name>/
         - raw/test/<class_name>/
-        
+
         Args:
             train_dataset: The loaded CIFAR-100 training dataset.
             test_dataset: The loaded CIFAR-100 test dataset.
@@ -277,23 +374,23 @@ class CIFAR100Downloader:
         # Define output directories
         train_image_dir = self.root_dir / "train"
         test_image_dir = self.root_dir / "test"
-        
+
         for class_name in self.CLASS_NAMES:
             (train_image_dir / class_name).mkdir(parents=True, exist_ok=True)
             (test_image_dir / class_name).mkdir(parents=True, exist_ok=True)
-            
+
         logger.info("Saving training images...")
         self._save_dataset_images(train_dataset, train_image_dir)
-        
+
         logger.info("Saving test images...")
         self._save_dataset_images(test_dataset, test_image_dir)
-        
+
         logger.info("✅ All images saved successfully!")
-        
+
     def _save_dataset_images(self, dataset: CIFAR100, base_dir: Path) -> None:
         """
         Helper to save images from a dataset into class-named subfolders.
-        
+
         Args:
             dataset: The CIFAR-100 dataset (train or test).
             base_dir: Root directory (train or test) to save images under.
@@ -305,7 +402,7 @@ class CIFAR100Downloader:
                 if image.min() < 0:  # Assume normalized to [-1, 1]
                     image = image * 0.5 + 0.5
                 image = transforms.functional.to_pil_image(image)
-                
+
             class_name = self.CLASS_NAMES[label]
             file_path = base_dir / class_name / f"{idx}.png"
             image.save(file_path)

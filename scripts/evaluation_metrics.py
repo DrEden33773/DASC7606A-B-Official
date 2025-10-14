@@ -1,8 +1,8 @@
-import torch
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve
+import torch
+from sklearn.metrics import auc, confusion_matrix, precision_recall_curve, roc_curve
 from sklearn.preprocessing import label_binarize
 from tqdm import tqdm
 
@@ -46,7 +46,9 @@ def plot_precision_recall_curves(true_labels, probabilities, class_names):
     pr_auc = {}
 
     for i in range(len(class_names)):
-        precision[i], recall[i], _ = precision_recall_curve(true_labels_bin[:, i], probabilities[:, i])
+        precision[i], recall[i], _ = precision_recall_curve(
+            true_labels_bin[:, i], probabilities[:, i]
+        )
         pr_auc[i] = auc(recall[i], precision[i])
 
     # Plot all precision-recall curves
@@ -84,7 +86,7 @@ def plot_calibration_curve(true_labels, probabilities, class_names, n_bins=10):
 
     # Get predicted probabilities and whether prediction is correct
     pred_probs = np.max(probabilities, axis=1)
-    pred_correct = (np.argmax(probabilities, axis=1) == true_labels)
+    pred_correct = np.argmax(probabilities, axis=1) == true_labels
 
     # Bin the predictions
     bins = np.linspace(0, 1, n_bins + 1)
@@ -107,11 +109,11 @@ def plot_calibration_curve(true_labels, probabilities, class_names, n_bins=10):
     confidence_bins = np.array(confidence_bins)
 
     # Plot
-    plt.plot(confidence_bins, accuracy_bins, 'o-', label='Model calibration')
-    plt.plot([0, 1], [0, 1], '--', label='Perfect calibration')
-    plt.xlabel('Predicted Probability')
-    plt.ylabel('Actual Accuracy')
-    plt.title('Calibration Curve')
+    plt.plot(confidence_bins, accuracy_bins, "o-", label="Model calibration")
+    plt.plot([0, 1], [0, 1], "--", label="Perfect calibration")
+    plt.xlabel("Predicted Probability")
+    plt.ylabel("Actual Accuracy")
+    plt.title("Calibration Curve")
     plt.legend()
     plt.grid(True, alpha=0.3)
 

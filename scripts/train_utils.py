@@ -1,20 +1,25 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
+from torchvision import datasets, transforms
 from tqdm import tqdm
-import os
+
 
 def load_transforms():
     """
     Load the data transformations
     """
-    return transforms.Compose([
-        transforms.Resize((32, 32)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
+    return transforms.Compose(
+        [
+            transforms.Resize((32, 32)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ]
+    )
+
 
 def load_data(data_dir, batch_size):
     """
@@ -38,13 +43,16 @@ def load_data(data_dir, batch_size):
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = random_split(
-        full_dataset, [train_size, val_size],
-        generator=torch.Generator()
+        full_dataset, [train_size, val_size], generator=torch.Generator()
     )
 
     # Create data loaders for training and validation
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=2
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, num_workers=2
+    )
 
     # Print dataset summary
     print(f"Dataset loaded from: {data_dir}")
@@ -61,6 +69,7 @@ def define_loss_and_optimizer(model: nn.Module, lr: float, weight_decay: float):
     """
     Define the loss function and optimizer
     This function is similar to the cell 3. Model Configuration in 04_model_training.ipynb
+
     Args:
         model: The model to train
         lr: Learning rate
@@ -72,13 +81,16 @@ def define_loss_and_optimizer(model: nn.Module, lr: float, weight_decay: float):
     """
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, "min", patience=3, factor=0.5
+    )
     return criterion, optimizer, scheduler
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
     """
     Train the model for one epoch
+
     Args:
         model: The model to train
         dataloader: DataLoader for training data
@@ -129,6 +141,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
 def validate_epoch(model, dataloader, criterion, device):
     """
     Validate the model
+
     Args:
         model: The model to validate
         dataloader: DataLoader for validation data
@@ -172,6 +185,7 @@ def validate_epoch(model, dataloader, criterion, device):
 def save_checkpoint(state, filename):
     """
     Save model checkpoint
+
     Args:
         state: Checkpoint state
         filename: Path to save checkpoint
@@ -182,6 +196,7 @@ def save_checkpoint(state, filename):
 def load_checkpoint(filename, model, optimizer=None, scheduler=None):
     """
     Load model checkpoint
+
     Args:
         filename: Path to checkpoint file
         model: Model to load weights into
@@ -204,6 +219,7 @@ def load_checkpoint(filename, model, optimizer=None, scheduler=None):
 
     return checkpoint
 
+
 def save_metrics(metrics: str, filename: str = "training_metrics.txt"):
     """
     Save training metrics to a file
@@ -211,5 +227,5 @@ def save_metrics(metrics: str, filename: str = "training_metrics.txt"):
         metrics: Metrics string to save
         filename: Path to save metrics
     """
-    with open(filename, 'w') as f:
+    with open(filename, "w") as f:
         f.write(metrics)
