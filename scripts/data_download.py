@@ -2,7 +2,9 @@ import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
+import torch
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as TF
 from torchvision.datasets import CIFAR10, CIFAR100
 
 # Configure module-level logger
@@ -152,15 +154,28 @@ class CIFAR10Downloader:
 
         Args:
             dataset: The CIFAR-10 dataset (train or test).
-            base_dir: Root directory (train or test) to save images under.
+            base_dir: Path  # Root directory (train or test) to save images under.
         """
-        for idx, (image, label) in enumerate(dataset):
+        # Fix for lint error: 'CIFAR10' is not Iterable. Use DataLoader for iteration.
+        data_loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
+        for idx, batch in enumerate(data_loader):
+            # For untransformed datasets: batch = (image, label)
+            # For transformed datasets: batch may be tuple or list
+            if isinstance(batch, (tuple, list)) and len(batch) == 2:
+                image, label = batch
+            else:
+                raise ValueError("Unexpected batch format for dataset item")
+
+            # Remove batch dimension
+            image = image.squeeze(0)
+            label = label.squeeze().item() if hasattr(label, "item") else int(label)
+
             # If transform includes ToTensor, convert back to PIL for saving
-            if isinstance(image, transforms.functional.Tensor):
+            if isinstance(image, TF.Tensor):
                 # Denormalize if normalized
                 if image.min() < 0:  # Assume normalized to [-1, 1]
                     image = image * 0.5 + 0.5
-                image = transforms.functional.to_pil_image(image)
+                image = TF.to_pil_image(image)
 
             class_name = self.CLASS_NAMES[label]
             file_path = base_dir / class_name / f"{idx}.png"
@@ -395,13 +410,21 @@ class CIFAR100Downloader:
             dataset: The CIFAR-100 dataset (train or test).
             base_dir: Root directory (train or test) to save images under.
         """
-        for idx, (image, label) in enumerate(dataset):
+        data_loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
+        for idx, batch in enumerate(data_loader):
+            # For untransformed datasets: batch = (image, label)
+            # For transformed datasets: batch may be tuple or list
+            if isinstance(batch, (tuple, list)) and len(batch) == 2:
+                image, label = batch
+            else:
+                raise ValueError("Unexpected batch format for dataset item")
+
             # If transform includes ToTensor, convert back to PIL for saving
-            if isinstance(image, transforms.functional.Tensor):
+            if isinstance(image, TF.Tensor):
                 # Denormalize if normalized
                 if image.min() < 0:  # Assume normalized to [-1, 1]
                     image = image * 0.5 + 0.5
-                image = transforms.functional.to_pil_image(image)
+                image = TF.to_pil_image(image)
 
             class_name = self.CLASS_NAMES[label]
             file_path = base_dir / class_name / f"{idx}.png"
