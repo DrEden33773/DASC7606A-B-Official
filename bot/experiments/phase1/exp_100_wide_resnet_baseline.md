@@ -3,7 +3,7 @@
 **日期**: 2025-10-17  
 **阶段**: Phase 1  
 **优先级**: 🔥🔥🔥🔥🔥  
-**状态**: 🟡 待开始
+**状态**: ✅ 已完成
 
 ---
 
@@ -92,18 +92,18 @@ python main.py \
 
 | Metric | Value |
 |--------|-------|
-| Best Epoch | TBD / 500 |
-| Train Loss | TBD |
-| Train Acc | TBD% |
-| Val Loss | TBD |
-| Val Acc | TBD% |
-| Val F1 (macro) | **TBD** |
-| Test F1 (macro) | **TBD** |
+| Best Epoch | 152 / 500 |
+| Train Loss | ~1.5 (epoch 152) |
+| Train Acc | ~68% (epoch 152) |
+| Val Loss | 0.9572 |
+| Val Acc | 78.26% |
+| Val F1 (macro) | **0.7802** |
+| Test F1 (macro) | **0.78** |
 
 ### 训练时间
 
-- **总时间**: TBD 小时
-- **平均每 epoch**: TBD 秒
+- **总时间**: ~3.5 小时 (202 epochs, early stopped)
+- **平均每 epoch**: ~60 秒
 - **硬件**: RTX 5080
 
 ### 性能对比
@@ -112,7 +112,9 @@ python main.py \
 |-----|-----|--------|--------|------|
 | Baseline (历史) | ResNet50 | 23.5M | 0.77 | - |
 | Baseline (历史) | ResNet34 | 21M | 0.77 | - |
-| Current (Exp #100) | WRN-28-10 | 36.5M | TBD | TBD |
+| **Current (Exp #100)** | **WRN-28-10** | **36.5M** | **0.7802** | **+0.0102** |
+
+**结论**: 有提升但未达 Phase 1 目标 (0.80)
 
 ---
 
