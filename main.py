@@ -5,6 +5,7 @@ import argparse
 import logging
 import os
 import random
+from typing import cast
 
 import numpy as np
 import torch
@@ -25,6 +26,7 @@ from scripts.evaluation_metrics import (
 )
 from scripts.model_architectures import create_model
 from scripts.train_utils import (
+    ModelEMA,
     define_loss_and_optimizer,
     load_data,
     load_transforms,
@@ -51,8 +53,12 @@ def set_random_seeds(seed):
 
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.enabled = True
+        CUBLAS = "CUBLAS_WORKSPACE_CONFIG"
+        if CUBLAS not in os.environ:
+            os.environ[CUBLAS] = ":4096:8"
 
 
 def parse_args():
@@ -64,7 +70,7 @@ def parse_args():
         "--dataset",
         type=str,
         choices=["cifar10", "cifar100"],
-        default="cifar10",
+        default="cifar100",
         help="Dataset to use (cifar10 or cifar100)",
     )
 
@@ -78,7 +84,102 @@ def parse_args():
 
     # Data augmentation
     parser.add_argument(
-        "--aug_count", type=int, default=3, help="Number of augmentations per image"
+        "--use_online_aug",
+        action="store_true",
+        default=True,
+        help="Use online augmentation (dynamic, different every epoch, default: enabled). "
+        "If disabled, use offline augmentation (pre-generated, larger dataset).",
+    )
+    parser.add_argument(
+        "--no_online_aug",
+        dest="use_online_aug",
+        action="store_false",
+        help="Disable online augmentation and use offline augmentation instead",
+    )
+    parser.add_argument(
+        "--aug_count",
+        type=int,
+        default=3,
+        help="Number of augmentations per image (for offline augmentation)",
+    )
+    parser.add_argument(
+        "--aug_strength",
+        type=str,
+        choices=["light", "medium", "strong"],
+        default="medium",
+        help="Augmentation strength: light (recommended for Focal Loss), medium, strong (too aggressive for 32x32)",
+    )
+    parser.add_argument(
+        "--mixup_alpha",
+        type=float,
+        default=0.25,
+        help="Mixup alpha parameter (default: 0.4). "
+        "Recommended: 1.0 for CIFAR-100. "
+        "Mixup mixes training examples to improve generalization. "
+        "0.0=disabled, 0.2-0.4=light, 1.0=uniform (recommended). "
+        "Note: Ignored if --use_cutmix is enabled.",
+    )
+    parser.add_argument(
+        "--use_cutmix",
+        action="store_true",
+        default=True,
+        help="Use CutMix instead of Mixup (recommended for CIFAR-100 to preserve local features). "
+        "CutMix cuts and pastes patches between images, preserving local clarity. "
+        "This is especially beneficial for 32x32 images where Mixup blurs fine-grained features.",
+    )
+    parser.add_argument(
+        "--cutmix_alpha",
+        type=float,
+        default=0.65,
+        help="CutMix alpha parameter (default: 1.0 = recommended for CIFAR-100). "
+        "Controls the size distribution of cut regions. "
+        "1.0 is the standard setting from the paper. "
+        "Only used if --use_cutmix is enabled.",
+    )
+
+    # Model architecture
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=["simple", "resnet18", "resnet34", "resnet50"],
+        default="resnet18",
+        help="Model architecture to use (simple, resnet18 (recommended), resnet34, or resnet50). "
+        "ResNet-50 uses Bottleneck blocks (23.5M params) - more powerful than ResNet-34 (21M params).",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.5,
+        help="Dropout rate for regularization (for models that support it). Recommended: 0.5 for ResNet18",
+    )
+    parser.add_argument(
+        "--use_pretrained",
+        action="store_true",
+        default=True,
+        help="Use ImageNet pretrained model (Transfer Learning). "
+        "Significantly improves performance on CIFAR-100. "
+        "Only works with ResNet models (resnet18, resnet34, resnet50). "
+        "Expected improvement: +0.07-0.10 F1-score.",
+    )
+    parser.add_argument(
+        "--no_pretrained",
+        dest="use_pretrained",
+        action="store_false",
+        help="Disable ImageNet pretrained model (Transfer Learning)",
+    )
+    parser.add_argument(
+        "--use_compile",
+        action="store_true",
+        default=True,
+        help="Use torch.compile() for faster training (PyTorch 2.0+). "
+        "Expected speedup: 5-15%% (first epoch will be slower due to compilation). "
+        "Disable with --no_compile if encountering issues.",
+    )
+    parser.add_argument(
+        "--no_compile",
+        dest="use_compile",
+        action="store_false",
+        help="Disable torch.compile() optimization",
     )
 
     # Training parameters
@@ -86,11 +187,104 @@ def parse_args():
         "--batch_size", type=int, default=128, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_epochs", type=int, default=30, help="Number of training epochs"
+        "--num_epochs", type=int, default=300, help="Number of training epochs"
     )
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument(
-        "--weight_decay", type=float, default=1e-4, help="Weight decay (L2 penalty)"
+        "--weight_decay", type=float, default=1e-3, help="Weight decay (L2 penalty)"
+    )
+
+    # Optimizer and scheduler
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        choices=["adam", "adamw", "sgd"],
+        default="adamw",
+        help="Optimizer: adam, adamw (recommended), or sgd",
+    )
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        choices=["plateau", "cosine", "step", "onecycle"],
+        default="cosine",
+        help="LR scheduler: plateau, cosine (recommended), step, or onecycle",
+    )
+    parser.add_argument(
+        "--label_smoothing",
+        type=float,
+        default=0.0,
+        help="Label smoothing factor (0.0-1.0). 0.15 is recommended for CIFAR-100 with CE loss",
+    )
+
+    # Loss function
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        choices=["ce", "focal"],
+        default="ce",
+        help="Loss function: 'ce' (CrossEntropy with optional label smoothing) or 'focal' (Focal Loss for hard examples)",
+    )
+    parser.add_argument(
+        "--focal_gamma",
+        type=float,
+        default=2.0,
+        help="Gamma parameter for Focal Loss (default: 2.0). Higher values focus more on hard examples. Recommended: 1.0-3.0",
+    )
+    parser.add_argument(
+        "--use_class_weights",
+        action="store_true",
+        default=False,
+        help="Use class weights to focus on hard classes (seal, lizard, otter, etc.)",
+    )
+
+    # Mixed precision training
+    parser.add_argument(
+        "--use_amp",
+        action="store_true",
+        default=True,
+        help="Use Automatic Mixed Precision (AMP) training (default: enabled)",
+    )
+    parser.add_argument(
+        "--no_amp",
+        dest="use_amp",
+        action="store_false",
+        help="Disable AMP training",
+    )
+
+    # Gradient clipping
+    parser.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=1.0,
+        help="Maximum gradient norm for gradient clipping. 0 = no clipping. Recommended: 1.0",
+    )
+
+    # EMA (Exponential Moving Average)
+    parser.add_argument(
+        "--use_ema",
+        action="store_true",
+        default=True,
+        help="Use Exponential Moving Average for model weights (default: enabled)",
+    )
+    parser.add_argument(
+        "--no_ema",
+        dest="use_ema",
+        action="store_false",
+        help="Disable EMA",
+    )
+    parser.add_argument(
+        "--ema_decay",
+        type=float,
+        default=0.9999,
+        help="EMA decay rate (default: 0.9999). Higher = slower update",
+    )
+
+    # Learning rate warmup
+    parser.add_argument(
+        "--warmup_epochs",
+        type=int,
+        default=10,
+        help="Number of warmup epochs for cosine scheduler (default: 5)",
     )
 
     # Checkpointing
@@ -100,8 +294,8 @@ def parse_args():
     parser.add_argument(
         "--early_stopping_patience",
         type=int,
-        default=10,
-        help="Early stopping patience",
+        default=30,  # 35 or 30 does not matter (in most cases)
+        help="Early stopping patience. Increased to 20 to allow more training before stopping",
     )
 
     # Hardware
@@ -112,7 +306,10 @@ def parse_args():
         help="Device to use for training (cuda/cpu)",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=4, help="Number of data loading workers"
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of data loading workers (default: 4, recommended for Windows)",
     )
 
     # Random seeds
@@ -129,16 +326,41 @@ def collect_data(args):
 
     # Create the directory for our raw data if it doesn't already exist
     print("Preparing data directory...")
-    os.makedirs(args.data_dir + "/raw", exist_ok=True)
+    raw_dir = args.data_dir + "/raw"
+    os.makedirs(raw_dir, exist_ok=True)
+
+    # Check and warn if mixed dataset exists
+    train_dir = raw_dir + "/train"
+    if os.path.exists(train_dir):
+        num_classes = len(
+            [
+                d
+                for d in os.listdir(train_dir)
+                if os.path.isdir(os.path.join(train_dir, d))
+            ]
+        )
+        expected_classes = 10 if args.dataset == "cifar10" else 100
+        if num_classes != expected_classes and num_classes > 0:
+            print(
+                f"⚠️  Warning: Found {num_classes} classes, but {args.dataset.upper()} should have {expected_classes}!"
+            )
+            print(
+                f"   This may indicate mixed CIFAR-10/100 data. Consider cleaning: rm -rf {train_dir}"
+            )
+            raise ValueError(
+                f"Data contamination detected: {num_classes} classes found, expected {expected_classes}. "
+                f"Please delete '{train_dir}' and '{raw_dir.replace('/raw', '/augmented')}' to start fresh."
+            )
+
     print("Setup complete.")
 
     if args.dataset == "cifar10":
         train_dataset, test_dataset = download_and_extract_cifar10_data(
-            root_dir=args.data_dir + "/raw",
+            root_dir=raw_dir,
         )
     else:
         train_dataset, test_dataset = download_and_extract_cifar100_data(
-            root_dir=args.data_dir + "/raw",
+            root_dir=raw_dir,
         )
 
 
@@ -149,6 +371,7 @@ def augment_data(args):
     raw_data_dir = args.data_dir + "/raw/train/"
     augmented_data_dir = args.data_dir + "/augmented/train/"
     augmentations_per_image = args.aug_count
+    augmentation_strength = args.aug_strength
 
     # --- Path Validation ---
     # Check if the raw data directory exists before proceeding.
@@ -159,6 +382,7 @@ def augment_data(args):
         print(f"✅ Found raw data at: {raw_data_dir}")
         print(f"   Augmented data will be saved to: {augmented_data_dir}")
         print(f"   Number of augmentations per image: {augmentations_per_image}")
+        print(f"   Augmentation strength: {augmentation_strength}")
 
     # Ensure the raw data directory exists before running
     if os.path.exists(raw_data_dir):
@@ -167,6 +391,8 @@ def augment_data(args):
             input_dir=raw_data_dir,
             output_dir=augmented_data_dir,
             augmentations_per_image=augmentations_per_image,
+            augmentation_strength=augmentation_strength,
+            use_cutmix=args.use_cutmix,
         )
         print("\n🎉 Data augmentation completed successfully!")
     else:
@@ -175,25 +401,157 @@ def augment_data(args):
     return augmented_data_dir
 
 
-def build_model(args):
+def build_model(args) -> nn.Module:
     """Build the model"""
     if args.dataset == "cifar10":
         num_classes = 10
     else:
         num_classes = 100
-    logger.info(f"Creating model with {num_classes} classes, {args.device} device...")
-    model = create_model(num_classes=num_classes, device=args.device)
+
+    model_desc = f"{'ImageNet pretrained ' if args.use_pretrained else ''}{args.model}"
+    logger.info(
+        f"Creating {model_desc} model with {num_classes} classes, "
+        f"dropout={args.dropout}, device={args.device}..."
+    )
+
+    model = create_model(
+        num_classes=num_classes,
+        device=args.device,
+        model_type=args.model,
+        dropout_rate=args.dropout,
+        use_pretrained=args.use_pretrained,
+    )
+
+    if args.use_pretrained:
+        logger.info("✅ Loaded ImageNet pretrained weights for Transfer Learning")
+        logger.info(
+            "   Adapted for CIFAR: 3×3 conv1, removed maxpool, replaced FC layer"
+        )
+
+    # Apply torch.compile() for performance optimization (PyTorch 2.0+)
+    if hasattr(torch, "compile") and args.use_compile:
+        logger.info("🚀 Compiling model with torch.compile() for faster training...")
+        logger.info("   (First epoch will be slower due to compilation overhead)")
+        try:
+            # Use fullgraph=False (default) for better compatibility
+            # fullgraph=True may fail with dynamic control flow (e.g., dropout)
+            # Strategy: Try inductor first (best performance), fallback to aot_eager if Triton unavailable
+            import platform
+
+            if platform.system() == "Windows":
+                # Windows doesn't support Triton, use AOT backend directly
+                logger.info(
+                    "   Detected Windows: using backend='aot_eager' (Triton not available)"
+                )
+                compiled_model = torch.compile(
+                    model,
+                    backend="aot_eager",  # Windows-compatible backend with AOT optimization
+                    fullgraph=False,
+                )
+            else:
+                # Linux: Try inductor (needs Triton), fallback to aot_eager
+                try:
+                    logger.info(
+                        "   Detected Linux: trying backend='inductor' with mode='reduce-overhead'"
+                    )
+                    compiled_model = torch.compile(
+                        model,
+                        backend="inductor",  # Explicitly use inductor
+                        mode="reduce-overhead",
+                        fullgraph=False,  # Allow graph breaks for robustness
+                    )
+                except Exception as e:
+                    # Triton not available on Linux, fallback to aot_eager
+                    logger.warning(
+                        f"   Inductor backend failed (likely missing Triton): {e}"
+                    )
+                    logger.info("   Falling back to backend='aot_eager'")
+                    compiled_model = torch.compile(
+                        model,
+                        backend="aot_eager",
+                        fullgraph=False,
+                    )
+            # torch.compile() returns a wrapper that's still callable as nn.Module
+            model = cast(nn.Module, compiled_model)
+            logger.info("✅ Model compiled successfully!")
+            logger.info(
+                "   Expected speedup: 3-8%% (aot_eager), 5-15%% (inductor with Triton)"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️  torch.compile() failed: {e}")
+            logger.warning("   Falling back to eager mode (no compilation)")
+
     return model
 
 
 def train(args, model: nn.Module):
-    # Define loss and optimizer
-    criterion, optimizer, scheduler = define_loss_and_optimizer(
-        model, args.lr, args.weight_decay
+    # Disable `label-smoothing` while using `CutMix` or `Mixup`
+    if (args.use_cutmix and args.cutmix_alpha > 0) or args.mixup_alpha > 0:
+        args.label_smoothing = 0.0
+        if args.use_cutmix and args.cutmix_alpha > 0 and args.mixup_alpha > 0:
+            logger.info("--label_smoothing disabled while using Mixup + CutMix")
+            logger.info("Using ADAPTIVE augmentation strategy (category-aware):")
+            logger.info(
+                "  • Detail-sensitive (human/small animals): Mixup only (alpha=0.4)"
+            )
+            logger.info("  • Local-feature (mechanical/plants): 80% CutMix, 20% Mixup")
+            logger.info("  • Mixed-strategy (others): 30% Mixup, 70% CutMix")
+        elif args.use_cutmix and args.cutmix_alpha > 0:
+            logger.info("--label_smoothing disabled while using CutMix")
+        elif args.mixup_alpha > 0:
+            logger.info("--label_smoothing disabled while using Mixup")
+
+    # Determine data directory based on augmentation strategy
+    if args.use_online_aug:
+        data_dir = args.data_dir + "/raw/train"
+        logger.info("Using ONLINE augmentation (dynamic, different every epoch)")
+    else:
+        data_dir = args.data_dir + "/augmented/train"
+        logger.info(
+            f"Using OFFLINE augmentation (pre-generated, {args.aug_count}x augmentations per image)"
+        )
+
+    # Load data first to get steps_per_epoch for OneCycleLR
+    train_loader, val_loader = load_data(
+        data_dir=data_dir,
+        batch_size=args.batch_size,
+        dataset_type=args.dataset,
+        manual_seed=args.seed,
+        use_online_aug=args.use_online_aug,
+        augmentation_strength=args.aug_strength,
+        use_cutmix=args.use_cutmix,
     )
+    steps_per_epoch = len(train_loader)
+
+    # Get number of classes
+    num_classes = 10 if args.dataset == "cifar10" else 100
+
+    # Define loss, optimizer, and scheduler with new options
+    criterion, optimizer, scheduler = define_loss_and_optimizer(
+        model=model,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        optimizer_type=args.optimizer,
+        scheduler_type=args.scheduler,
+        label_smoothing=args.label_smoothing,
+        num_epochs=args.num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        warmup_epochs=args.warmup_epochs,
+        loss_type=args.loss_type,
+        focal_gamma=args.focal_gamma,
+        use_class_weights=args.use_class_weights,
+        num_classes=num_classes,
+    )
+
+    # Initialize EMA if enabled
+    ema = None
+    if args.use_ema:
+        ema = ModelEMA(model, decay=args.ema_decay, device=args.device)
+        logger.info(f"EMA enabled with decay={args.ema_decay}")
 
     # Initialize tracking variables
     best_val_loss = float("inf")
+    best_val_f1 = 0.0  # save best F1
     patience_counter = 0
 
     # Lists to store training history for later plotting
@@ -209,24 +567,58 @@ def train(args, model: nn.Module):
     print(
         f"Training configured for {args.num_epochs} epochs with early stopping patience of {args.early_stopping_patience}."
     )
-
-    # Load data
-    train_loader, val_loader = load_data(
-        args.data_dir + "/augmented/train", args.batch_size
+    print(f"Optimizer: {args.optimizer}, Scheduler: {args.scheduler}")
+    print(
+        f"Label smoothing: {args.label_smoothing}, Mixed precision: {args.use_amp}, "
+        f"Gradient clipping: {args.max_grad_norm if args.max_grad_norm > 0 else 'disabled'}"
     )
+    print(
+        f"EMA: {args.use_ema}, Warmup epochs: {args.warmup_epochs if args.scheduler == 'cosine' else 'N/A (OneCycle has built-in warmup)'}"
+    )
+    # Log data augmentation strategy
+    if args.use_cutmix and args.cutmix_alpha > 0:
+        print(f"CutMix: Enabled (alpha={args.cutmix_alpha})")
+        if args.mixup_alpha > 0:
+            print(f"Mixup: ALSO Enabled (alpha={args.mixup_alpha})")
+    elif args.mixup_alpha > 0:
+        print(f"Mixup: Enabled (alpha={args.mixup_alpha})")
+    else:
+        print("Mixup/CutMix: Disabled")
 
     print("Starting training...")
     for epoch in range(args.num_epochs):
-        # Train for one epoch
+        # Train for one epoch with new options
         train_loss, train_acc = train_epoch(
-            model, train_loader, criterion, optimizer, args.device
+            model=model,
+            dataloader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            device=args.device,
+            scheduler=scheduler if args.scheduler == "onecycle" else None,
+            use_amp=args.use_amp,
+            max_grad_norm=args.max_grad_norm if args.max_grad_norm > 0 else None,
+            ema=ema,
+            mixup_alpha=args.mixup_alpha,
+            cutmix_alpha=args.cutmix_alpha,
+            use_cutmix=args.use_cutmix,
         )
 
-        # Validate the model
-        val_loss, val_acc = validate_epoch(model, val_loader, criterion, args.device)
+        # Validate the model (use EMA weights if enabled)
+        if ema is not None:
+            ema.apply_shadow()
+        val_loss, val_acc, val_f1 = validate_epoch(
+            model, val_loader, criterion, args.device
+        )
+        if ema is not None:
+            ema.restore()
 
-        # Update learning rate based on validation loss
-        scheduler.step(val_loss)
+        # Update learning rate based on scheduler type
+        if args.scheduler == "plateau":
+            # Type narrowing: ReduceLROnPlateau requires a metric
+            cast(torch.optim.lr_scheduler.ReduceLROnPlateau, scheduler).step(val_loss)
+        elif args.scheduler in ["cosine", "step"]:
+            scheduler.step()
+        # OneCycleLR updates per batch in train_epoch
 
         # Store metrics for plotting
         train_losses.append(train_loss)
@@ -234,30 +626,71 @@ def train(args, model: nn.Module):
         train_accuracies.append(train_acc)
         val_accuracies.append(val_acc)
 
+        # Get current learning rate for logging
+        current_lr = optimizer.param_groups[0]["lr"]
+
         # Print epoch summary
         print(f"Epoch {epoch + 1}/{args.num_epochs}:")
-        print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
-        print(f"  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+        print(
+            f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, LR: {current_lr:.6f}"
+        )
+        print(
+            f"  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}"
+        )
 
         # Check for improvement and save the best model
-        if val_loss < best_val_loss:
+        # Two-tier strategy: Prioritize Loss, then F1
+        # 1. If Loss doesn't increase, save (regardless of F1)
+        # 2. If Loss increases but F1 improves, also save
+
+        save_model = False
+        save_reason = ""
+        if val_loss <= best_val_loss:
+            # Priority 1: Loss didn't increase - save model
+            old_best_val_loss = best_val_loss
             best_val_loss = val_loss
+            best_val_f1 = val_f1
+            save_model = True
+            save_reason = (
+                f"Loss improved/stable: {val_loss:.4f} ≤ {old_best_val_loss:.4f}"
+            )
+        elif val_f1 > best_val_f1:
+            # Priority 2: Loss increased but F1 improved - still save
+            old_best_val_f1 = best_val_f1
+            best_val_f1 = val_f1
+            best_val_loss = val_loss
+            save_model = True
+            save_reason = (
+                f"Loss increased but F1 improved: {val_f1:.4f} > {old_best_val_f1:.4f}"
+            )
+
+        if save_model:
             patience_counter = 0
+
+            # Prepare checkpoint (with EMA weights if enabled)
+            checkpoint = {
+                "epoch": epoch + 1,
+                "state_dict": model.state_dict(),
+                "best_val_loss": best_val_loss,
+                "best_val_f1": best_val_f1,
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+            }
+
+            # Add EMA state if enabled
+            if ema is not None:
+                checkpoint["ema_shadow"] = ema.shadow
+
             save_checkpoint(
-                {
-                    "epoch": epoch + 1,
-                    "state_dict": model.state_dict(),
-                    "best_val_loss": best_val_loss,
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(),
-                },
+                checkpoint,
                 args.output_dir + "/models/best_model.pth",
             )
-            print("  ↳ Validation loss improved. Saving best model!")
+            print(f"  ↳ Validation improved ({save_reason}). Saving best model!")
         else:
             patience_counter += 1
             print(
-                f"  ↳ No improvement. Early stopping counter: {patience_counter}/{args.early_stopping_patience}"
+                f"  ↳ No improvement (Loss: {val_loss:.4f} > {best_val_loss:.4f}, F1: {val_f1:.4f} ≤ {best_val_f1:.4f}). "
+                f"Early stopping counter: {patience_counter}/{args.early_stopping_patience}"
             )
 
         # Check for early stopping
@@ -271,12 +704,22 @@ def train(args, model: nn.Module):
     checkpoint = torch.load(args.output_dir + "/models/best_model.pth")
     model.load_state_dict(checkpoint["state_dict"])
 
+    # Restore EMA weights if they were saved
+    if ema is not None and "ema_shadow" in checkpoint:
+        ema.shadow = checkpoint["ema_shadow"]
+        ema.apply_shadow()
+        print("Loaded EMA weights from checkpoint")
+
     # Retrieve details from the checkpoint
     best_epoch = checkpoint["epoch"]
     best_val_loss_loaded = checkpoint["best_val_loss"]
+    best_val_f1_loaded = checkpoint.get(
+        "best_val_f1", 0.0
+    )  # get best F1 (compatible with old checkpoint)
 
     print(
-        f"Loaded best model from epoch {best_epoch} with validation loss {best_val_loss_loaded:.4f}"
+        f"Loaded best model from epoch {best_epoch} "
+        f"with validation F1-score {best_val_f1_loaded:.4f} (loss {best_val_loss_loaded:.4f})"
     )
 
     # Save the final model's state_dict for easy use in evaluation/inference
@@ -292,7 +735,22 @@ def evaluate(args, model: nn.Module):
     """Evaluate the model on test data"""
     # Load the test dataset from the specified directory
     test_data_dir = args.data_dir + "/raw/test"
-    test_dataset = datasets.ImageFolder(root=test_data_dir, transform=load_transforms())
+    test_dataset = datasets.ImageFolder(
+        root=test_data_dir, transform=load_transforms(dataset_type=args.dataset)
+    )
+
+    # Validate test dataset class count
+    expected_classes = 10 if args.dataset == "cifar10" else 100
+    actual_classes = len(test_dataset.classes)
+    if actual_classes != expected_classes:
+        raise ValueError(
+            f"⚠️ Test data contamination detected!\n"
+            f"   Expected {expected_classes} classes for {args.dataset.upper()}, "
+            f"but found {actual_classes} classes.\n"
+            f"   Please delete '{test_data_dir}' and re-run data collection to fix.\n"
+            f"   Command: python main.py --dataset {args.dataset}"
+        )
+
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
@@ -303,8 +761,22 @@ def evaluate(args, model: nn.Module):
     # Set the model to evaluation mode
     model.eval()
 
-    # Define loss function
-    criterion, _, _ = define_loss_and_optimizer(model, args.lr, args.weight_decay)
+    # Get number of classes
+    num_classes = 10 if args.dataset == "cifar10" else 100
+
+    # Define loss function (same as training for consistency)
+    criterion, _, _ = define_loss_and_optimizer(
+        model=model,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        optimizer_type=args.optimizer,
+        scheduler_type=args.scheduler,
+        label_smoothing=args.label_smoothing,
+        loss_type=args.loss_type,
+        focal_gamma=args.focal_gamma,
+        use_class_weights=args.use_class_weights,
+        num_classes=num_classes,
+    )
 
     # Evaluate the model
     test_loss, test_accuracy, all_preds, all_labels, all_probs = evaluate_model(
@@ -314,7 +786,7 @@ def evaluate(args, model: nn.Module):
         all_labels, all_preds, target_names=test_dataset.classes
     )
 
-    save_metrics(metrics_str)
+    save_metrics(metrics=metrics_str)
 
 
 def main():
@@ -332,8 +804,18 @@ def main():
 
     # Collect data
     collect_data(args)
-    # Augment data
-    augment_data(args)
+
+    # Data augmentation (based on strategy)
+    if args.use_online_aug:
+        logger.info(
+            "Using ONLINE augmentation strategy (dynamic, different every epoch)."
+        )
+    else:
+        logger.info(
+            f"Using OFFLINE augmentation strategy (pre-generating {args.aug_count}x augmented data)."
+        )
+        augment_data(args)
+
     # Build model
     model = build_model(args)
     # Train

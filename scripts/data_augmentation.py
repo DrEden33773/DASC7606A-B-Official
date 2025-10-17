@@ -1,12 +1,13 @@
 import logging
 import random
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Literal, Tuple
 
 import albumentations as A
 import numpy as np
 import torch
 from PIL import Image
+from tqdm import tqdm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,8 @@ class ImageAugmenter:
         seed: int = 42,
         save_original: bool = True,
         image_extensions: Tuple[str, ...] = (".png", ".jpg", ".jpeg"),
+        augmentation_strength: Literal["light", "medium", "strong"] = "medium",
+        use_cutmix: bool = False,
     ):
         """
         Initialize the ImageAugmenter.
@@ -31,39 +34,199 @@ class ImageAugmenter:
             seed: Random seed for reproducibility.
             save_original: Whether to save the original image with prefix 'orig_'.
             image_extensions: Tuple of valid image file extensions.
+            augmentation_strength: Strength of augmentation pipeline. Options:
+                - "light": Basic augmentations (original, for CIFAR-10)
+                - "medium": Moderate augmentations (default)
+                - "strong": Heavy augmentations (recommended for CIFAR-100)
         """
         self.augmentations_per_image = augmentations_per_image
         self.seed = seed
         self.save_original = save_original
         self.image_extensions = image_extensions
+        self.augmentation_strength = augmentation_strength
 
         self._set_seed()
 
-        # Define Albumentations pipeline
-        self.transform = A.Compose(
-            [
-                A.Rotate(limit=15, p=0.8),
-                A.HorizontalFlip(p=0.5),
-                A.ShiftScaleRotate(
-                    shift_limit=0.1,
-                    scale_limit=0.1,
-                    rotate_limit=0,
-                    p=0.8,
-                    border_mode=0,  # cv2.BORDER_CONSTANT
-                ),
-                A.ColorJitter(
-                    brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.8
-                ),
-                A.OneOf(
+        # Define Albumentations pipeline based on strength
+        self.transform = self._get_transform_pipeline(augmentation_strength, use_cutmix)
+
+    def _get_transform_pipeline(
+        self,
+        strength: Literal["light", "medium", "strong"],
+        use_cutmix: bool = False,
+    ) -> A.Compose:
+        """
+        Get augmentation pipeline based on specified strength.
+
+        Args:
+            strength: Augmentation strength level
+
+        Returns:
+            Albumentations Compose object with appropriate transforms
+
+        Raises:
+            ValueError: If strength is not recognized
+        """
+        if strength == "light":
+            # Original pipeline - suitable for CIFAR-10
+            return A.Compose(
+                [
+                    A.Rotate(limit=15, p=0.8),
+                    A.HorizontalFlip(p=0.5),
+                    A.ShiftScaleRotate(
+                        shift_limit=0.1,
+                        scale_limit=0.1,
+                        rotate_limit=0,
+                        p=0.8,
+                        border_mode=0,  # cv2.BORDER_CONSTANT
+                    ),
+                    A.ColorJitter(
+                        brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.8
+                    ),
+                    A.OneOf(
+                        [
+                            A.GaussianBlur(blur_limit=(3, 7), p=0.5),
+                            A.MotionBlur(blur_limit=7, p=0.5),
+                        ],
+                        p=0.3,
+                    ),
+                    A.RandomBrightnessContrast(p=0.2),
+                ]
+            )
+
+        elif strength == "medium":
+            # Enhanced pipeline with more diversity
+            return A.Compose(
+                [
+                    A.Rotate(limit=20, p=0.8),
+                    A.HorizontalFlip(p=0.5),
+                    A.ShiftScaleRotate(
+                        shift_limit=0.15,
+                        scale_limit=0.15,
+                        rotate_limit=15,
+                        p=0.8,
+                        border_mode=0,
+                    ),
+                    A.ColorJitter(
+                        brightness=0.3, contrast=0.3, saturation=0.3, hue=0.15, p=0.8
+                    ),
+                    A.OneOf(
+                        [
+                            A.GaussianBlur(blur_limit=(3, 7), p=0.5),
+                            A.MotionBlur(blur_limit=7, p=0.5),
+                            A.MedianBlur(blur_limit=5, p=0.3),
+                        ],
+                        p=0.4,
+                    ),
+                    A.RandomBrightnessContrast(
+                        brightness_limit=0.2, contrast_limit=0.2, p=0.5
+                    ),
+                ]
+                + (
                     [
-                        A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-                        A.MotionBlur(blur_limit=7, p=0.5),
-                    ],
-                    p=0.3,
-                ),
-                A.RandomBrightnessContrast(p=0.2),
-            ]
-        )
+                        A.CoarseDropout(
+                            num_holes_range=(1, 1),
+                            hole_height_range=(4, 8),
+                            hole_width_range=(4, 8),
+                            p=0.3,
+                        ),
+                    ]
+                    if not use_cutmix
+                    else []
+                )
+            )
+
+        elif strength == "strong":
+            # Strong pipeline optimized for CIFAR-100
+            return A.Compose(
+                [
+                    # Geometric transformations
+                    A.Rotate(limit=25, p=0.8),
+                    A.HorizontalFlip(p=0.5),
+                    A.ShiftScaleRotate(
+                        shift_limit=0.2,
+                        scale_limit=0.2,
+                        rotate_limit=20,
+                        p=0.8,
+                        border_mode=0,
+                    ),
+                    # Advanced geometric augmentations
+                    A.OneOf(
+                        [
+                            A.ElasticTransform(alpha=1, sigma=50, p=0.3),
+                            A.GridDistortion(p=0.3),
+                            A.OpticalDistortion(distort_limit=0.3, p=0.3),
+                        ],
+                        p=0.3,
+                    ),
+                    # Color augmentations (critical for distinguishing similar classes)
+                    A.ColorJitter(
+                        brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.9
+                    ),
+                    A.OneOf(
+                        [
+                            A.HueSaturationValue(
+                                hue_shift_limit=20,
+                                sat_shift_limit=30,
+                                val_shift_limit=20,
+                                p=0.5,
+                            ),
+                            A.RGBShift(
+                                r_shift_limit=20,
+                                g_shift_limit=20,
+                                b_shift_limit=20,
+                                p=0.5,
+                            ),
+                            A.ChannelShuffle(p=0.2),
+                        ],
+                        p=0.5,
+                    ),
+                    # Blur and noise
+                    A.OneOf(
+                        [
+                            A.GaussianBlur(blur_limit=(3, 9), p=0.4),
+                            A.MotionBlur(blur_limit=9, p=0.4),
+                            A.MedianBlur(blur_limit=7, p=0.3),
+                            A.GaussNoise(p=0.3),
+                        ],
+                        p=0.5,
+                    ),
+                    # Brightness and contrast
+                    A.RandomBrightnessContrast(
+                        brightness_limit=0.3, contrast_limit=0.3, p=0.6
+                    ),
+                ]
+                + (
+                    [
+                        # Cutout/CoarseDropout for regularization
+                        A.CoarseDropout(
+                            num_holes_range=(1, 2),
+                            hole_height_range=(6, 12),
+                            hole_width_range=(6, 12),
+                            p=0.5,
+                        ),
+                    ]
+                    if not use_cutmix
+                    else []
+                )
+                + [
+                    # Additional pixel-level augmentations
+                    A.OneOf(
+                        [
+                            A.Sharpen(alpha=(0.2, 0.5), lightness=(0.5, 1.0), p=0.3),
+                            A.Emboss(alpha=(0.2, 0.5), strength=(0.2, 0.7), p=0.3),
+                            A.RandomToneCurve(scale=0.1, p=0.3),
+                        ],
+                        p=0.3,
+                    ),
+                ]
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown augmentation_strength: {strength}. "
+                f"Available options: 'light', 'medium', 'strong'"
+            )
 
     def _set_seed(self):
         """Set random seeds for reproducibility."""
@@ -112,12 +275,33 @@ class ImageAugmenter:
 
         logger.info(f"Found {len(image_files)} images to augment.")
 
-        for img_path in image_files:
+        # Create progress bar for image processing
+        progress_bar = tqdm(
+            image_files,
+            desc="🖼️  Processing images",
+            unit="img",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+        )
+
+        for img_path in progress_bar:
             try:
                 image = Image.open(img_path).convert("RGB")
             except Exception as e:
                 logger.warning(f"Failed to load image {img_path}: {e}")
                 continue
+
+            # Update progress bar with current file info
+            class_name = img_path.parent.name
+            file_name = img_path.name
+            progress_bar.set_postfix(
+                {
+                    "Class": class_name,
+                    "File": file_name[:15] + "..."
+                    if len(file_name) > 15
+                    else file_name,
+                    "Augmented": count,
+                }
+            )
 
             # Determine output subdirectory
             rel_dir = img_path.parent.relative_to(input_path)
@@ -137,8 +321,20 @@ class ImageAugmenter:
                 augmented.save(target_dir / aug_name)
                 count += 1
 
+                # Update the augmented count in real-time
+                progress_bar.set_postfix(
+                    {
+                        "Class": class_name,
+                        "File": file_name[:15] + "..."
+                        if len(file_name) > 15
+                        else file_name,
+                        "Augmented": count,
+                    }
+                )
+
+        progress_bar.close()
         logger.info(
-            f"Augmentation of {count} images completed. Output saved to: {output_dir}"
+            f"✅ Augmentation completed! Generated {count} augmented images from {len(image_files)} originals. Output saved to: {output_dir}"
         )
 
     def _find_image_files(self, root: Path) -> List[Path]:
@@ -162,17 +358,27 @@ def augment_dataset(
     output_dir: str,
     augmentations_per_image: int = 5,
     seed: int = 42,
+    augmentation_strength: Literal["light", "medium", "strong"] = "medium",
+    use_cutmix: bool = False,
 ) -> None:
     """
-    Backward-compatible wrapper for legacy code.
+    Backward-compatible wrapper for legacy code with enhanced augmentation options.
 
     Args:
         input_dir: Directory containing cleaned images (organized by class).
         output_dir: Directory to save augmented images.
         augmentations_per_image: Number of augmented versions per original image.
         seed: Random seed for reproducibility.
+        augmentation_strength: Strength of augmentation pipeline. Options:
+            - "light": Basic augmentations (suitable for CIFAR-10)
+            - "medium": Moderate augmentations (default)
+            - "strong": Heavy augmentations (recommended for CIFAR-100)
     """
     augmenter = ImageAugmenter(
-        augmentations_per_image=augmentations_per_image, seed=seed, save_original=True
+        augmentations_per_image=augmentations_per_image,
+        seed=seed,
+        save_original=True,
+        augmentation_strength=augmentation_strength,
+        use_cutmix=use_cutmix,
     )
     augmenter.process_directory(input_dir, output_dir)

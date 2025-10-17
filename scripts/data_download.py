@@ -1,8 +1,8 @@
 import logging
+import random
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-import torch
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as TF
 from torchvision.datasets import CIFAR10, CIFAR100
@@ -121,11 +121,15 @@ class CIFAR10Downloader:
         logger.info(separator)
 
     def save_images_to_folders(
-        self, train_dataset: CIFAR10, test_dataset: CIFAR10
+        self,
+        train_dataset: CIFAR10,
+        test_dataset: CIFAR10,
+        val_split: float = 0.2,
     ) -> None:
         """
         Save CIFAR-10 images as PNG files into organized folders:
         - raw/train/<class_name>/
+        - raw/val/<class_name>/
         - raw/test/<class_name>/
 
         Args:
@@ -134,47 +138,122 @@ class CIFAR10Downloader:
         """
         # Define output directories
         train_image_dir = self.root_dir / "train"
+        val_image_dir = self.root_dir / "val"
         test_image_dir = self.root_dir / "test"
 
         for class_name in self.CLASS_NAMES:
             (train_image_dir / class_name).mkdir(parents=True, exist_ok=True)
+            (val_image_dir / class_name).mkdir(parents=True, exist_ok=True)
             (test_image_dir / class_name).mkdir(parents=True, exist_ok=True)
 
+        # Split training data into train and validation
+        train_indices, val_indices = self._split_train_dataset(train_dataset, val_split)
+
         logger.info("Saving training images...")
-        self._save_dataset_images(train_dataset, train_image_dir)
+        self._save_dataset_images(train_dataset, train_image_dir, train_indices)
+
+        logger.info("Saving validation images...")
+        self._save_dataset_images(train_dataset, val_image_dir, val_indices)
 
         logger.info("Saving test images...")
         self._save_dataset_images(test_dataset, test_image_dir)
 
         logger.info("✅ All images saved successfully!")
 
-    def _save_dataset_images(self, dataset: CIFAR10, base_dir: Path) -> None:
+    def _split_train_dataset(
+        self, train_dataset: CIFAR10, val_split: float
+    ) -> Tuple[List[int], List[int]]:
         """
-        Helper to save images from a dataset into class-named subfolders.
+        Split training dataset indices into train and validation sets.
+
+        Uses stratified splitting to ensure each class has the same proportion
+        in both train and validation sets.
 
         Args:
-            dataset: The CIFAR-10 dataset (train or test).
-            base_dir: Path  # Root directory (train or test) to save images under.
+            train_dataset: The training dataset to split.
+            val_split: Fraction of data to allocate to validation.
+
+        Returns:
+            Tuple of (train_indices, val_indices)
         """
-        # Fix for lint error: 'CIFAR10' is not Iterable. Use DataLoader for iteration.
-        data_loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
-        for idx, batch in enumerate(data_loader):
-            # For untransformed datasets: batch = (image, label)
-            # For transformed datasets: batch may be tuple or list
-            if isinstance(batch, (tuple, list)) and len(batch) == 2:
-                image, label = batch
-            else:
-                raise ValueError("Unexpected batch format for dataset item")
+        # Set random seed for reproducibility
+        random.seed(42)
 
-            # Remove batch dimension
-            image = image.squeeze(0)
-            label = label.squeeze().item() if hasattr(label, "item") else int(label)
+        # Get all labels from the dataset
+        # CIFAR10/100 datasets have a 'targets' attribute
+        all_labels = train_dataset.targets
 
+        # Group indices by class
+        class_indices = {}
+        for idx, label in enumerate(all_labels):
+            if label not in class_indices:
+                class_indices[label] = []
+            class_indices[label].append(idx)
+
+        # Split each class separately (stratified split)
+        train_indices = []
+        val_indices = []
+
+        for class_label, indices in class_indices.items():
+            # Shuffle indices for this class
+            random.shuffle(indices)
+
+            # Calculate split point for this class
+            n_samples = len(indices)
+            n_val = int(n_samples * val_split)
+            n_train = n_samples - n_val
+
+            # Split indices for this class
+            train_indices.extend(indices[:n_train])
+            val_indices.extend(indices[n_train:])
+
+        # Shuffle the final train and val indices to mix classes
+        random.shuffle(train_indices)
+        random.shuffle(val_indices)
+
+        logger.info(
+            f"Split training data: {len(train_indices)} train, {len(val_indices)} validation samples"
+        )
+        logger.info(
+            f"Stratified split: each of {len(class_indices)} classes split proportionally"
+        )
+
+        return train_indices, val_indices
+
+    def _save_dataset_images(
+        self, dataset: CIFAR10, base_dir: Path, indices: Optional[List[int]] = None
+    ) -> None:
+        """
+        Helper to save images from a dataset into class-named subfolders.
+        Args:
+            dataset: The CIFAR-10 dataset (train, val, or test).
+            base_dir: Root directory to save images under.
+            indices: Optional list of indices to save. If None, saves all images.
+        """
+        if indices is None:
+            indices = list(range(len(dataset)))
+
+        for idx in indices:
+            image, label = dataset[idx]
             # If transform includes ToTensor, convert back to PIL for saving
-            if isinstance(image, TF.Tensor):
-                # Denormalize if normalized
-                if image.min() < 0:  # Assume normalized to [-1, 1]
-                    image = image * 0.5 + 0.5
+            if (
+                hasattr(image, "min") and image.min() < 0
+            ):  # Assume normalized to [-1, 1]
+                image = image * 0.5 + 0.5
+            if hasattr(image, "cpu"):
+                image = image.cpu()
+            if hasattr(image, "numpy"):
+                import numpy as np
+
+                image = image.numpy()
+                if image.shape[0] == 3:  # CHW format
+                    image = image.transpose(1, 2, 0)  # Convert to HWC
+                image = (image * 255).astype(np.uint8)
+                from PIL import Image
+
+                image = Image.fromarray(image)
+            elif hasattr(image, "permute"):
+                # Handle tensor format
                 image = TF.to_pil_image(image)
 
             class_name = self.CLASS_NAMES[label]
@@ -375,11 +454,15 @@ class CIFAR100Downloader:
         logger.info(separator)
 
     def save_images_to_folders(
-        self, train_dataset: CIFAR100, test_dataset: CIFAR100
+        self,
+        train_dataset: CIFAR100,
+        test_dataset: CIFAR100,
+        val_split: float = 0.2,
     ) -> None:
         """
         Save CIFAR-100 images as PNG files into organized folders:
         - raw/train/<class_name>/
+        - raw/val/<class_name>/
         - raw/test/<class_name>/
 
         Args:
@@ -388,42 +471,126 @@ class CIFAR100Downloader:
         """
         # Define output directories
         train_image_dir = self.root_dir / "train"
+        val_image_dir = self.root_dir / "val"
         test_image_dir = self.root_dir / "test"
 
         for class_name in self.CLASS_NAMES:
             (train_image_dir / class_name).mkdir(parents=True, exist_ok=True)
+            (val_image_dir / class_name).mkdir(parents=True, exist_ok=True)
             (test_image_dir / class_name).mkdir(parents=True, exist_ok=True)
 
+        # Split training data into train and validation
+        train_indices, val_indices = self._split_train_dataset(train_dataset, val_split)
+
         logger.info("Saving training images...")
-        self._save_dataset_images(train_dataset, train_image_dir)
+        self._save_dataset_images(train_dataset, train_image_dir, train_indices)
+
+        logger.info("Saving validation images...")
+        self._save_dataset_images(train_dataset, val_image_dir, val_indices)
 
         logger.info("Saving test images...")
         self._save_dataset_images(test_dataset, test_image_dir)
 
         logger.info("✅ All images saved successfully!")
 
-    def _save_dataset_images(self, dataset: CIFAR100, base_dir: Path) -> None:
+    def _split_train_dataset(
+        self, train_dataset: CIFAR100, val_split: float
+    ) -> Tuple[List[int], List[int]]:
+        """
+        Split training dataset indices into train and validation sets.
+
+        Uses stratified splitting to ensure each class has the same proportion
+        in both train and validation sets.
+
+        Args:
+            train_dataset: The training dataset to split.
+            val_split: Fraction of data to allocate to validation.
+        Returns:
+            Tuple of (train_indices, val_indices)
+        """
+        # Set random seed for reproducibility
+        random.seed(42)
+
+        # Get all labels from the dataset
+        # CIFAR10/100 datasets have a 'targets' attribute
+        all_labels = train_dataset.targets
+
+        # Group indices by class
+        class_indices = {}
+        for idx, label in enumerate(all_labels):
+            if label not in class_indices:
+                class_indices[label] = []
+            class_indices[label].append(idx)
+
+        # Split each class separately (stratified split)
+        train_indices = []
+        val_indices = []
+
+        for class_label, indices in class_indices.items():
+            # Shuffle indices for this class
+            random.shuffle(indices)
+
+            # Calculate split point for this class
+            n_samples = len(indices)
+            n_val = int(n_samples * val_split)
+            n_train = n_samples - n_val
+
+            # Split indices for this class
+            train_indices.extend(indices[:n_train])
+            val_indices.extend(indices[n_train:])
+
+        # Shuffle the final train and val indices to mix classes
+        random.shuffle(train_indices)
+        random.shuffle(val_indices)
+
+        logger.info(
+            f"Split training data: {len(train_indices)} train, {len(val_indices)} validation samples"
+        )
+        logger.info(
+            f"Stratified split: each of {len(class_indices)} classes split proportionally"
+        )
+
+        return train_indices, val_indices
+
+    def _save_dataset_images(
+        self, dataset: CIFAR100, base_dir: Path, indices: Optional[List[int]] = None
+    ) -> None:
         """
         Helper to save images from a dataset into class-named subfolders.
 
         Args:
-            dataset: The CIFAR-100 dataset (train or test).
-            base_dir: Root directory (train or test) to save images under.
+            dataset: The CIFAR-100 dataset (train, val, or test).
+            base_dir: Root directory to save images under.
+            indices: Optional list of indices to save. If None, saves all images.
         """
-        data_loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
-        for idx, batch in enumerate(data_loader):
-            # For untransformed datasets: batch = (image, label)
-            # For transformed datasets: batch may be tuple or list
-            if isinstance(batch, (tuple, list)) and len(batch) == 2:
-                image, label = batch
-            else:
-                raise ValueError("Unexpected batch format for dataset item")
 
-            # If transform includes ToTensor, convert back to PIL for saving
-            if isinstance(image, TF.Tensor):
-                # Denormalize if normalized
-                if image.min() < 0:  # Assume normalized to [-1, 1]
-                    image = image * 0.5 + 0.5
+        if indices is None:
+            indices = list(range(len(dataset)))
+
+        # Type narrowing: CIFAR100 dataset is iterable at runtime
+        dataset_iterable = dataset  # Dataset implements __getitem__ and __len__
+
+        for idx in indices:
+            image, label = dataset_iterable[idx]
+
+            if (
+                hasattr(image, "min") and image.min() < 0
+            ):  # Assume normalized to [-1, 1]
+                image = image * 0.5 + 0.5
+            if hasattr(image, "cpu"):
+                image = image.cpu()
+            if hasattr(image, "numpy"):
+                import numpy as np
+
+                image = image.numpy()
+                if image.shape[0] == 3:  # CHW format
+                    image = image.transpose(1, 2, 0)  # Convert to HWC
+                image = (image * 255).astype(np.uint8)
+                from PIL import Image
+
+                image = Image.fromarray(image)
+            elif hasattr(image, "permute"):
+                # Handle tensor format
                 image = TF.to_pil_image(image)
 
             class_name = self.CLASS_NAMES[label]
@@ -436,7 +603,7 @@ def download_and_extract_cifar10_data(
     transform: Optional[transforms.Compose] = None,
     download: bool = True,
     log_stats: bool = True,
-    save_images: bool = True,
+    val_split: float = 0.2,
 ) -> Tuple[CIFAR10, CIFAR10]:
     """
     Convenience function to download and extract CIFAR-10 dataset.
@@ -448,13 +615,13 @@ def download_and_extract_cifar10_data(
         transform: Optional transform pipeline.
         download: Whether to download if not present.
         log_stats: Whether to print dataset statistics.
-        save_images: Whether to save images as PNG files in train/test/class folders.
+        val_split: Fraction of training data to move to validation (default: 0.2).
 
     Returns:
         Tuple of (train_dataset, test_dataset)
 
     Example:
-        >>> train_data, test_data = download_and_extract_cifar10_data(save_images=True)
+        >>> train_data, test_data = download_and_extract_cifar10_data()
         >>> print(f"Train: {len(train_data)}, Test: {len(test_data)}")
     """
     downloader = CIFAR10Downloader(
@@ -465,8 +632,7 @@ def download_and_extract_cifar10_data(
     )
     train_dataset, test_dataset = downloader.load_datasets()
 
-    if save_images:
-        downloader.save_images_to_folders(train_dataset, test_dataset)
+    downloader.save_images_to_folders(train_dataset, test_dataset, val_split)
 
     return train_dataset, test_dataset
 
@@ -476,7 +642,7 @@ def download_and_extract_cifar100_data(
     transform: Optional[transforms.Compose] = None,
     download: bool = True,
     log_stats: bool = True,
-    save_images: bool = True,
+    val_split: float = 0.2,
 ) -> Tuple[CIFAR100, CIFAR100]:
     """
     Convenience function to download and extract CIFAR-100 dataset.
@@ -488,13 +654,13 @@ def download_and_extract_cifar100_data(
         transform: Optional transform pipeline.
         download: Whether to download if not present.
         log_stats: Whether to print dataset statistics.
-        save_images: Whether to save images as PNG files in train/test/class folders.
+        val_split: Fraction of training data to move to validation (default: 0.2).
 
     Returns:
         Tuple of (train_dataset, test_dataset)
 
     Example:
-        >>> train_data, test_data = download_and_extract_cifar100_data(save_images=True)
+        >>> train_data, test_data = download_and_extract_cifar100_data()
         >>> print(f"Train: {len(train_data)}, Test: {len(test_data)}")
     """
     downloader = CIFAR100Downloader(
@@ -505,7 +671,6 @@ def download_and_extract_cifar100_data(
     )
     train_dataset, test_dataset = downloader.load_datasets()
 
-    if save_images:
-        downloader.save_images_to_folders(train_dataset, test_dataset)
+    downloader.save_images_to_folders(train_dataset, test_dataset, val_split)
 
     return train_dataset, test_dataset
