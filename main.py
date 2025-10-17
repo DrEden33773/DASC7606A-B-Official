@@ -141,31 +141,25 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        choices=["simple", "resnet18", "resnet34", "resnet50"],
-        default="resnet18",
-        help="Model architecture to use (simple, resnet18 (recommended), resnet34, or resnet50). "
-        "ResNet-50 uses Bottleneck blocks (23.5M params) - more powerful than ResNet-34 (21M params).",
+        choices=[
+            "resnet18",
+            "resnet34",
+            "resnet50",
+            "wide_resnet28_10",
+            "wide_resnet40_10",
+            "wide_resnet28_12",
+        ],
+        default="wide_resnet28_10",
+        help="Model architecture to use (all trained from scratch). "
+        "ResNet variants: resnet18 (11M), resnet34 (21M), resnet50 (23.5M). "
+        "Wide ResNet variants (recommended): wide_resnet28_10 (36.5M, Phase 1 default), "
+        "wide_resnet40_10 (55.8M), wide_resnet28_12 (52.8M).",
     )
     parser.add_argument(
         "--dropout",
         type=float,
-        default=0.5,
-        help="Dropout rate for regularization (for models that support it). Recommended: 0.5 for ResNet18",
-    )
-    parser.add_argument(
-        "--use_pretrained",
-        action="store_true",
-        default=True,
-        help="Use ImageNet pretrained model (Transfer Learning). "
-        "Significantly improves performance on CIFAR-100. "
-        "Only works with ResNet models (resnet18, resnet34, resnet50). "
-        "Expected improvement: +0.07-0.10 F1-score.",
-    )
-    parser.add_argument(
-        "--no_pretrained",
-        dest="use_pretrained",
-        action="store_false",
-        help="Disable ImageNet pretrained model (Transfer Learning)",
+        default=0.3,
+        help="Dropout rate for regularization. Recommended: 0.3 for Wide ResNet, 0.5 for ResNet",
     )
     parser.add_argument(
         "--use_compile",
@@ -402,16 +396,15 @@ def augment_data(args):
 
 
 def build_model(args) -> nn.Module:
-    """Build the model"""
+    """Build the model (from scratch)"""
     if args.dataset == "cifar10":
         num_classes = 10
     else:
         num_classes = 100
 
-    model_desc = f"{'ImageNet pretrained ' if args.use_pretrained else ''}{args.model}"
     logger.info(
-        f"Creating {model_desc} model with {num_classes} classes, "
-        f"dropout={args.dropout}, device={args.device}..."
+        f"Creating {args.model} model with {num_classes} classes, "
+        f"dropout={args.dropout}, device={args.device} (training from scratch)..."
     )
 
     model = create_model(
@@ -419,14 +412,14 @@ def build_model(args) -> nn.Module:
         device=args.device,
         model_type=args.model,
         dropout_rate=args.dropout,
-        use_pretrained=args.use_pretrained,
     )
 
-    if args.use_pretrained:
-        logger.info("✅ Loaded ImageNet pretrained weights for Transfer Learning")
-        logger.info(
-            "   Adapted for CIFAR: 3×3 conv1, removed maxpool, replaced FC layer"
-        )
+    # Log model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(
+        f"Model parameters: {total_params / 1e6:.2f}M total, {trainable_params / 1e6:.2f}M trainable"
+    )
 
     # Apply torch.compile() for performance optimization (PyTorch 2.0+)
     if hasattr(torch, "compile") and args.use_compile:

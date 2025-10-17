@@ -2,7 +2,8 @@ from typing import Literal, Optional, Protocol, Type
 
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
+
+# torchvision.models removed - no pretrained models allowed per assignment guidelines
 
 
 class ResNetBlock(Protocol):
@@ -21,32 +22,8 @@ class ResNetBlock(Protocol):
     ) -> None: ...
 
 
-class SimpleCNN(nn.Module):
-    """
-    A simple CNN architecture for image classification
-    """
-
-    def __init__(self, num_classes=10):
-        super(SimpleCNN, self).__init__()
-        # Convolutional layers: progressively increase number of filters (3 -> 32 -> 64 -> 128)
-        # 3x3 kernels with padding=1 maintain spatial dimensions before pooling
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)  # 2x2 pooling reduces spatial dimensions by half
-        # Fully connected layers: flatten feature maps and classify
-        self.fc1 = nn.Linear(128 * 4 * 4, 512)  # 128 channels * 4x4 spatial resolution
-        self.fc2 = nn.Linear(512, num_classes)
-        self.dropout = nn.Dropout(0.5)  # Dropout for regularization
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 128 * 4 * 4)
-        x = self.dropout(F.relu(self.fc1(x)))
-        x = self.fc2(x)
-        return x
+# SimpleCNN removed - no longer needed for CIFAR-100 optimization
+# Use ResNet or Wide ResNet variants instead for better performance
 
 
 class BasicBlock(nn.Module):
@@ -388,111 +365,42 @@ def resnet50_cifar(num_classes: int = 10, dropout_rate: float = 0.3) -> ResNetCI
     return ResNetCIFAR(Bottleneck, [3, 4, 6, 3], num_classes, dropout_rate)
 
 
-def create_pretrained_resnet(
-    num_classes: int,
-    device: str,
-    model_type: Literal["resnet18", "resnet34", "resnet50"] = "resnet34",
-    dropout_rate: float = 0.5,
-    freeze_backbone: bool = False,
-) -> nn.Module:
-    """
-    Create ImageNet pretrained ResNet model adapted for CIFAR-100.
-
-    This function loads a ResNet pretrained on ImageNet and adapts it for CIFAR:
-    1. Loads pretrained weights from torchvision
-    2. Modifies first conv layer for 32×32 input (instead of 224×224)
-    3. Removes max pooling to preserve spatial resolution
-    4. Replaces final FC layer for target number of classes
-    5. Optionally freezes backbone for feature extraction
-
-    Args:
-        num_classes: Number of output classes (100 for CIFAR-100)
-        device: Device to place model on ('cuda' or 'cpu')
-        model_type: Type of ResNet architecture. Options:
-            - "resnet18": ResNet-18 (11M params)
-            - "resnet34": ResNet-34 (21M params, recommended)
-            - "resnet50": ResNet-50 (25M params)
-        dropout_rate: Dropout rate before final FC layer (default: 0.5)
-        freeze_backbone: If True, freeze all layers except FC (for initial training)
-
-    Returns:
-        Pretrained ResNet model adapted for CIFAR-100
-
-    Raises:
-        ValueError: If model_type is not recognized
-
-    Example:
-        >>> # Phase 1: Train only FC layer
-        >>> model = create_pretrained_resnet(100, 'cuda', freeze_backbone=True)
-        >>>
-        >>> # Phase 2: Fine-tune entire model
-        >>> model = create_pretrained_resnet(100, 'cuda', freeze_backbone=False)
-    """
-    # Load pretrained model from torchvision
-    if model_type == "resnet18":
-        model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-    elif model_type == "resnet34":
-        model = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
-    elif model_type == "resnet50":
-        model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-    else:
-        raise ValueError(
-            f"Unknown model_type: {model_type}. "
-            f"Available options: 'resnet18', 'resnet34', 'resnet50'"
-        )
-
-    # Modify first conv layer for CIFAR (32×32 instead of 224×224)
-    # Original: 7×7 conv with stride=2 → 112×112
-    # Modified: 3×3 conv with stride=1 → 32×32 (preserve resolution)
-    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-
-    # Remove max pooling layer (preserve 32×32 resolution)
-    # Original: 3×3 max pool with stride=2 → 56×56
-    # Modified: Identity (no-op) → 32×32
-    model.maxpool = nn.Identity()  # type: ignore[assignment]
-
-    # Replace final FC layer for CIFAR-100
-    num_features = model.fc.in_features  # 512 for ResNet18/34, 2048 for ResNet50
-    model.fc = nn.Sequential(  # type: ignore[assignment]
-        nn.Dropout(dropout_rate), nn.Linear(num_features, num_classes)
-    )
-
-    # Optionally freeze backbone (for phase 1 training)
-    if freeze_backbone:
-        # Freeze all parameters
-        for param in model.parameters():
-            param.requires_grad = False
-
-        # Unfreeze only the final FC layer
-        for param in model.fc.parameters():
-            param.requires_grad = True
-
-    # Move model to device
-    model = model.to(device)
-
-    return model
+# create_pretrained_resnet removed - pretraining is not allowed for this assignment
+# All models must be trained from scratch per assignment guidelines
 
 
 def create_model(
     num_classes: int,
     device: str,
-    model_type: Literal["simple", "resnet18", "resnet34", "resnet50"] = "simple",
+    model_type: Literal[
+        "resnet18",
+        "resnet34",
+        "resnet50",
+        "wide_resnet28_10",
+        "wide_resnet40_10",
+        "wide_resnet28_12",
+    ] = "resnet18",
     dropout_rate: float = 0.3,
-    use_pretrained: bool = False,
 ):
     """
-    Create and initialize the model
+    Create and initialize the model from scratch.
+
+    All models are trained from scratch (no pretraining) per assignment guidelines.
 
     Args:
-        num_classes: Number of output classes
+        num_classes: Number of output classes (100 for CIFAR-100)
         device: Device to place the model on ('cuda' or 'cpu')
         model_type: Type of model architecture to use. Options:
-            - "simple": SimpleCNN (original baseline model)
-            - "resnet18": ResNet-18 optimized for CIFAR (11M params)
-            - "resnet34": ResNet-34 optimized for CIFAR (21M params)
-            - "resnet50": ResNet-50 optimized for CIFAR (23.5M params, uses Bottleneck)
-        dropout_rate: Dropout rate for models that support it (default: 0.3)
-        use_pretrained: If True, use ImageNet pretrained weights (Transfer Learning)
+            ResNet variants (CIFAR-optimized):
+            - "resnet18": ResNet-18 (11M params)
+            - "resnet34": ResNet-34 (21M params)
+            - "resnet50": ResNet-50 with Bottleneck (23.5M params)
+
+            Wide ResNet variants (recommended for CIFAR-100):
+            - "wide_resnet28_10": WRN-28-10 (36.5M params) ← Phase 1 default
+            - "wide_resnet40_10": WRN-40-10 (55.8M params) ← Phase 3 option
+            - "wide_resnet28_12": WRN-28-12 (52.8M params) ← Alternative
+        dropout_rate: Dropout rate for regularization (default: 0.3)
 
     Returns:
         Model instance moved to the specified device
@@ -500,52 +408,44 @@ def create_model(
     Raises:
         ValueError: If model_type is not recognized
 
+    Example:
+        >>> # Phase 1: Wide ResNet-28-10 (recommended)
+        >>> model = create_model(100, 'cuda', 'wide_resnet28_10', dropout_rate=0.3)
+        >>>
+        >>> # Baseline: ResNet-34
+        >>> model = create_model(100, 'cuda', 'resnet34', dropout_rate=0.5)
+
     Note:
-        ResNet-50 uses Bottleneck blocks (1x1->3x3->1x1 structure) which are more
-        parameter-efficient than BasicBlock used in ResNet-18/34. Expected to provide
-        +0.02-0.03 F1 improvement over ResNet-34 for CIFAR-100 (from scratch).
+        Wide ResNet generally outperforms standard ResNet for CIFAR datasets
+        when trained from scratch. Expected improvement: +0.02-0.03 F1 over ResNet-34.
     """
-    # Use pretrained model if requested
-    if use_pretrained:
-        if model_type not in ["resnet18", "resnet34", "resnet50"]:
-            raise ValueError(
-                f"Pretrained models only available for ResNet. "
-                f"Got model_type='{model_type}'. Use 'resnet18', 'resnet34', or 'resnet50'."
-            )
-        # Type narrowing for pretrained model types
-        pretrained_model_type: Literal["resnet18", "resnet34", "resnet50"]
-        if model_type == "resnet18":
-            pretrained_model_type = "resnet18"
-        elif model_type == "resnet34":
-            pretrained_model_type = "resnet34"
-        elif model_type == "resnet50":
-            pretrained_model_type = "resnet50"
-        else:
-            raise ValueError(f"Unexpected model_type: {model_type}")
+    # Import Wide ResNet implementations
+    from bot.implementations.wide_resnet import (
+        wide_resnet28_10,
+        wide_resnet28_12,
+        wide_resnet40_10,
+    )
 
-        model = create_pretrained_resnet(
-            num_classes=num_classes,
-            device=device,
-            model_type=pretrained_model_type,
-            dropout_rate=dropout_rate,
-            freeze_backbone=False,  # Start with unfrozen for full fine-tuning
-        )
+    # Create model from scratch
+    if model_type == "resnet18":
+        model = resnet18_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
+    elif model_type == "resnet34":
+        model = resnet34_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
+    elif model_type == "resnet50":
+        model = resnet50_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
+    elif model_type == "wide_resnet28_10":
+        model = wide_resnet28_10(num_classes=num_classes, dropout_rate=dropout_rate)
+    elif model_type == "wide_resnet40_10":
+        model = wide_resnet40_10(num_classes=num_classes, dropout_rate=dropout_rate)
+    elif model_type == "wide_resnet28_12":
+        model = wide_resnet28_12(num_classes=num_classes, dropout_rate=dropout_rate)
     else:
-        # Create model from scratch
-        if model_type == "simple":
-            model = SimpleCNN(num_classes=num_classes)
-        elif model_type == "resnet18":
-            model = resnet18_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
-        elif model_type == "resnet34":
-            model = resnet34_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
-        elif model_type == "resnet50":
-            model = resnet50_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
-        else:
-            raise ValueError(
-                f"Unknown model_type: {model_type}. "
-                f"Available options: 'simple', 'resnet18', 'resnet34', 'resnet50'"
-            )
+        raise ValueError(
+            f"Unknown model_type: {model_type}. "
+            f"Available options: 'resnet18', 'resnet34', 'resnet50', "
+            f"'wide_resnet28_10', 'wide_resnet40_10', 'wide_resnet28_12'"
+        )
 
-        model = model.to(device)
+    model = model.to(device)
 
     return model
