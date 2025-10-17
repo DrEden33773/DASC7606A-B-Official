@@ -1,0 +1,18 @@
+# 配置文件
+
+此目录包含各阶段的标准化配置文件（YAML 格式）：
+
+## 计划创建
+- [ ] `phase1_baseline.yaml` - Phase 1 基线配置 (Wide ResNet)
+- [ ] `phase1_optimized.yaml` - Phase 1 优化后配置
+- [ ] `phase2_convnext.yaml` - Phase 2 ConvNeXt 配置
+- [ ] `phase2_sam.yaml` - Phase 2 SAM 优化器配置
+- [ ] `final_submission.yaml` - 最终提交配置
+
+## 使用方法
+```bash
+python main.py --config bot/configs/phase1_baseline.yaml
+```
+
+注: 需要先实现配置文件加载功能。
+

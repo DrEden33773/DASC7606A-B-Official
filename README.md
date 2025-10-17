@@ -18,26 +18,31 @@ By completing this project, you will:
 The project is divided into 6 sequential stages, each building upon the previous:
 
 ### Stage 1: Data Collection (`01_data_collection.ipynb`)
+
 - **Key Concepts**: Dataset downloading, exploration, visualization, statistical analysis
 - **Learning Goals**: Understand dataset structure, class distribution, and compute normalization statistics
 - **Deliverable**: Downloaded CIFAR-10 dataset with saved statistics
 
 ### Stage 2: Data Augmentation (`02_data_augmentation.ipynb`)
+
 - **Key Concepts**: Image augmentation techniques, data balancing, transformation pipelines
 - **Learning Goals**: Apply various augmentation methods to improve model generalization
 - **Deliverable**: Augmented dataset with increased diversity
 
 ### Stage 3: Model Building (`03_model_building.ipynb`)
+
 - **Key Concepts**: CNN architectures, layer design, transfer learning, model complexity
 - **Learning Goals**: Design and implement different CNN architectures
 - **Deliverable**: A simple CNN model ready for training
 
 ### Stage 4: Model Training (`04_model_training.ipynb`)
+
 - **Key Concepts**: Training loops, optimization algorithms, regularization, hyperparameter tuning
 - **Learning Goals**: Train models effectively while avoiding overfitting
 - **Deliverable**: Trained models with training history
 
 ### Stage 5: Model Evaluation (`05_model_evaluation.ipynb`)
+
 - **Key Concepts**: Performance metrics, confusion matrices, ROC curves, error analysis
 - **Learning Goals**: Comprehensively evaluate model performance and identify improvement areas
 - **Deliverable**: Complete evaluation report with visualizations
@@ -54,22 +59,26 @@ The project is divided into 6 sequential stages, each building upon the previous
 ### Installation
 
 1. **Clone the repository**:
+
 ```bash
 git clone git@github.com:hkukend/DASC7606A-B.git
 cd DASC7606A-B
 ```
 
 2. **Install dependencies** using uv (recommended):
+
 ```bash
 uv pip install -e .
 ```
 
 Or using pip:
+
 ```bash
 pip install -e .
 ```
 
 3. **Verify installation**:
+
 ```bash
 python -c "import torch; print(f'PyTorch {torch.__version__} installed successfully')"
 jupyter notebook --version
@@ -78,6 +87,7 @@ jupyter notebook --version
 ## 🚀 Quick Start
 
 1. **Launch Jupyter Notebook**:
+
 ```bash
 jupyter notebook
 ```
@@ -130,6 +140,7 @@ DASC7606A-B/
   - Modify only: `scripts/data_augmentation.py`, `scripts/model_architectures.py`, `scripts/train_utils.py`, and the hyperparameter arguments you feed into `main.py`.
   - Do not change the notebooks; use them to visualize, experiment, and understand the pipeline.
 - **How to run CIFAR-100 training (example)**:
+
   ```bash
   python main.py --dataset cifar100 --batch_size 128 --epochs 50 --lr 0.001 --weight_decay 1e-4
   ```
@@ -149,8 +160,8 @@ DASC7606A-B/
 └── main.py                           # The main script to run the whole pipeline
 ```
 
-* **Code Files:** All your modified code files.
-* **Submission Format:** Zip archive with your student ID as the filename.
+- **Code Files:** All your modified code files.
+- **Submission Format:** Zip archive with your student ID as the filename.
 
 ### Submission Deadline
 
@@ -158,12 +169,13 @@ DASC7606A-B/
 
 **Late Submission Policy:**
 
-* 10% penalty within 1 day late.
-* 20% penalty within 2 days late.
-* 50% penalty within 7 days late.
-* 100% penalty after 7 days late.
+- 10% penalty within 1 day late.
+- 20% penalty within 2 days late.
+- 50% penalty within 7 days late.
+- 100% penalty after 7 days late.
 
 ## 📈 Grading Criteria
+
 Your submission will be evaluated based on criterion:
 
 ### Model Performance
@@ -179,13 +191,13 @@ We will re-run your `main.py` script to evaluate your model's performance on the
 
 **Grading Breakdown (based on macro avg. F1-score on the test set):**
 
-* **F1-score >= 0.85:** Full marks (100%)
-* **F1-score >= 0.80:** 90% of the marks
-* **F1-score >= 0.75:** 80% of the marks
-* **F1-score >= 0.70:** 70% of the marks
-* **F1-score >= 0.65:** 60% of the marks
-* **F1-score >= 0.55:** 50% of the marks
-* **F1-score < 0.55/Fail to reproduce/Overtime:** No marks (0%)
+- **F1-score >= 0.85:** Full marks (100%)
+- **F1-score >= 0.80:** 90% of the marks
+- **F1-score >= 0.75:** 80% of the marks
+- **F1-score >= 0.70:** 70% of the marks
+- **F1-score >= 0.65:** 60% of the marks
+- **F1-score >= 0.55:** 50% of the marks
+- **F1-score < 0.55/Fail to reproduce/Overtime:** No marks (0%)
 
 ## ⚙️ Configuration
 
@@ -209,19 +221,24 @@ Key hyperparameters can be modified in the respective notebooks and scripts:
 ## 🎓 Pedagogical Features
 
 ### Checkpoint Questions
+
 Each notebook includes checkpoint questions to reinforce learning:
+
 - **Concept Checks**: Test understanding of key concepts
 - **Code Challenges**: Apply concepts through coding exercises
 - **Debugging Scenarios**: Identify and fix common issues
 
 ### Common Pitfalls
+
 Look for these warning boxes throughout the notebooks:
 > ⚠️ **Common Pitfall**: Overfitting on training data
-> 
+>
 > Monitor validation loss and use early stopping to prevent overfitting.
 
 ### Sample Outputs
+
 Each stage provides expected outputs to help validate your progress:
+
 - Sample visualizations
 - Expected accuracy ranges
 - Performance benchmarks
