@@ -489,6 +489,9 @@ def get_train_transforms(
     dataset_type: Literal["cifar10", "cifar100"] = "cifar100",
     augmentation_strength: Literal["light", "medium", "strong"] = "light",
     use_cutmix: bool = False,
+    use_randaugment: bool = False,
+    randaugment_n: int = 2,
+    randaugment_m: int = 9,
 ) -> AlbumentationsTransform:
     """
     Get training transforms with online augmentation.
@@ -496,6 +499,10 @@ def get_train_transforms(
     Args:
         dataset_type: Type of dataset ("cifar10" or "cifar100")
         augmentation_strength: Strength of augmentation
+        use_cutmix: Whether CutMix is used (affects CoarseDropout)
+        use_randaugment: Whether to use RandAugment (default: False)
+        randaugment_n: Number of RandAugment operations (default: 2)
+        randaugment_m: Magnitude of RandAugment (0-10, default: 9)
 
     Returns:
         AlbumentationsTransform wrapper with augmentation pipeline
@@ -512,10 +519,18 @@ def get_train_transforms(
         std = (0.5, 0.5, 0.5)
 
     # Build augmentation pipeline based on strength
+    # If RandAugment is enabled, prepend it to the pipeline
+    randaugment_transforms: list = []
+    if use_randaugment:
+        from bot.implementations.augmentations.randaugment import RandAugment
+
+        randaugment_transforms = [RandAugment(n=randaugment_n, m=randaugment_m)]
+
     if augmentation_strength == "light":
         # Light augmentations - suitable for CIFAR and Focal Loss
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
-            [
+            randaugment_transforms
+            + [
                 A.Rotate(limit=15, p=0.8),
                 A.HorizontalFlip(p=0.5),
                 A.ShiftScaleRotate(
@@ -544,7 +559,8 @@ def get_train_transforms(
     elif augmentation_strength == "medium":
         # Medium augmentations
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
-            [
+            randaugment_transforms
+            + [
                 A.Rotate(limit=20, p=0.8),
                 A.HorizontalFlip(p=0.5),
                 A.ShiftScaleRotate(
@@ -590,7 +606,8 @@ def get_train_transforms(
     elif augmentation_strength == "strong":
         # Strong augmentations (not recommended for 32x32 images)
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
-            [
+            randaugment_transforms
+            + [
                 A.Rotate(limit=25, p=0.8),
                 A.HorizontalFlip(p=0.5),
                 A.ShiftScaleRotate(
@@ -717,6 +734,9 @@ def load_data(
     use_online_aug: bool = True,
     augmentation_strength: Literal["light", "medium", "strong"] = "light",
     use_cutmix: bool = False,
+    use_randaugment: bool = False,
+    randaugment_n: int = 2,
+    randaugment_m: int = 9,
 ):
     """
     Load the data from the data directory and split it into training and validation sets.
@@ -749,6 +769,9 @@ def load_data(
             dataset_type=dataset_type,
             augmentation_strength=augmentation_strength,
             use_cutmix=use_cutmix,
+            use_randaugment=use_randaugment,
+            randaugment_n=randaugment_n,
+            randaugment_m=randaugment_m,
         )
     else:
         # OFFLINE augmentation: data is already augmented, just normalize

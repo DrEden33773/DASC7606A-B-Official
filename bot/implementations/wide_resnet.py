@@ -26,6 +26,62 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class DropPath(nn.Module):
+    """
+    Stochastic Depth (Drop Path) regularization.
+
+    Randomly drops entire residual branches during training to improve
+    generalization and reduce overfitting. This is a key technique for
+    training deep Wide ResNets.
+
+    Args:
+        drop_prob: Probability of dropping the path (0.0-1.0)
+                   - 0.0: No dropout (identity)
+                   - 0.1-0.2: Recommended for Wide ResNet
+                   - Higher values: More aggressive regularization
+
+    References:
+        Huang et al. "Deep Networks with Stochastic Depth" (ECCV 2016)
+        https://arxiv.org/abs/1603.09382
+
+    Example:
+        >>> drop_path = DropPath(drop_prob=0.2)
+        >>> x = torch.randn(8, 64, 32, 32)
+        >>> out = drop_path(x)  # During training, 20% chance of returning zeros
+    """
+
+    def __init__(self, drop_prob: float = 0.0) -> None:
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply stochastic depth.
+
+        Args:
+            x: Input tensor of any shape
+
+        Returns:
+            Output tensor (same shape as input, scaled by keep_prob during training)
+        """
+        # During evaluation or if drop_prob=0, return input as-is
+        if not self.training or self.drop_prob == 0.0:
+            return x
+
+        # Calculate keep probability
+        keep_prob = 1.0 - self.drop_prob
+
+        # Generate random binary mask (same as batch dimension)
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # (batch_size, 1, 1, ...)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()  # Binarize: 0 or 1
+
+        # Scale by keep_prob to maintain expected value
+        output = x.div(keep_prob) * random_tensor
+
+        return output
+
+
 class WideBasicBlock(nn.Module):
     """
     Wide ResNet basic residual block with pre-activation structure.
@@ -52,6 +108,7 @@ class WideBasicBlock(nn.Module):
         out_channels: int,
         stride: int,
         dropout_rate: float,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -74,6 +131,9 @@ class WideBasicBlock(nn.Module):
         self.conv2 = nn.Conv2d(
             out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
         )
+
+        # Stochastic Depth (Drop Path)
+        self.drop_path = DropPath(drop_path_rate)
 
         # Skip connection with 1×1 conv if dimensions don't match
         self.shortcut = nn.Sequential()
@@ -98,6 +158,9 @@ class WideBasicBlock(nn.Module):
 
         # Second block: BN → ReLU → Conv
         out = self.conv2(F.relu(self.bn2(out)))
+
+        # Apply stochastic depth before adding skip connection
+        out = self.drop_path(out)
 
         # Add skip connection
         out = out + self.shortcut(x)
@@ -144,6 +207,7 @@ class WideResNet(nn.Module):
         widen_factor: int,
         num_classes: int = 100,
         dropout_rate: float = 0.3,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -162,6 +226,14 @@ class WideResNet(nn.Module):
         # Stage 3: 64 * widen_factor
         n_channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
 
+        # Calculate stochastic depth rates (linear increase from 0 to drop_path_rate)
+        # For WRN-28-10: 12 blocks total (4 per group × 3 groups)
+        total_blocks = n_blocks * 3
+        drop_rates = [
+            i * drop_path_rate / (total_blocks - 1) if total_blocks > 1 else 0.0
+            for i in range(total_blocks)
+        ]
+
         # Track current number of input channels
         self.in_channels = n_channels[0]
 
@@ -170,10 +242,31 @@ class WideResNet(nn.Module):
             3, n_channels[0], kernel_size=3, stride=1, padding=1, bias=False
         )
 
-        # Create three groups of residual blocks
-        self.layer1 = self._make_layer(n_channels[1], n_blocks, dropout_rate, stride=1)
-        self.layer2 = self._make_layer(n_channels[2], n_blocks, dropout_rate, stride=2)
-        self.layer3 = self._make_layer(n_channels[3], n_blocks, dropout_rate, stride=2)
+        # Create three groups of residual blocks with linearly increasing drop_path_rate
+        block_idx = 0
+        self.layer1 = self._make_layer(
+            n_channels[1],
+            n_blocks,
+            dropout_rate,
+            stride=1,
+            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+        )
+        block_idx += n_blocks
+        self.layer2 = self._make_layer(
+            n_channels[2],
+            n_blocks,
+            dropout_rate,
+            stride=2,
+            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+        )
+        block_idx += n_blocks
+        self.layer3 = self._make_layer(
+            n_channels[3],
+            n_blocks,
+            dropout_rate,
+            stride=2,
+            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+        )
 
         # Final batch normalization
         self.bn1 = nn.BatchNorm2d(n_channels[3], momentum=0.9)
@@ -190,6 +283,7 @@ class WideResNet(nn.Module):
         num_blocks: int,
         dropout_rate: float,
         stride: int,
+        drop_rates: List[float],
     ) -> nn.Sequential:
         """
         Create a layer consisting of multiple wide basic blocks.
@@ -199,6 +293,7 @@ class WideResNet(nn.Module):
             num_blocks: Number of blocks in this layer
             dropout_rate: Dropout rate for all blocks
             stride: Stride for the first block (1 or 2)
+            drop_rates: List of drop_path rates for each block (linearly increasing)
 
         Returns:
             Sequential container with all blocks
@@ -206,9 +301,15 @@ class WideResNet(nn.Module):
         strides = [stride] + [1] * (num_blocks - 1)
         layers: List[nn.Module] = []
 
-        for stride in strides:
+        for i, stride in enumerate(strides):
             layers.append(
-                WideBasicBlock(self.in_channels, out_channels, stride, dropout_rate)
+                WideBasicBlock(
+                    self.in_channels,
+                    out_channels,
+                    stride,
+                    dropout_rate,
+                    drop_path_rate=drop_rates[i],
+                )
             )
             self.in_channels = out_channels
 
@@ -267,6 +368,7 @@ class WideResNet(nn.Module):
 def wide_resnet28_10(
     num_classes: int = 100,
     dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
 ) -> WideResNet:
     """
     Construct Wide ResNet-28-10 model for CIFAR datasets.
@@ -283,12 +385,13 @@ def wide_resnet28_10(
     Args:
         num_classes: Number of output classes (default: 100 for CIFAR-100)
         dropout_rate: Dropout rate for regularization (default: 0.3)
+        drop_path_rate: Stochastic depth drop rate (default: 0.0, recommended: 0.2)
 
     Returns:
         Wide ResNet-28-10 model instance
 
     Example:
-        >>> model = wide_resnet28_10(num_classes=100, dropout_rate=0.3)
+        >>> model = wide_resnet28_10(num_classes=100, dropout_rate=0.3, drop_path_rate=0.2)
         >>> x = torch.randn(16, 3, 32, 32)
         >>> logits = model(x)
         >>> print(logits.shape)  # torch.Size([16, 100])
@@ -298,12 +401,14 @@ def wide_resnet28_10(
         widen_factor=10,
         num_classes=num_classes,
         dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
     )
 
 
 def wide_resnet40_10(
     num_classes: int = 100,
     dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
 ) -> WideResNet:
     """
     Construct Wide ResNet-40-10 model for CIFAR datasets.
@@ -319,6 +424,7 @@ def wide_resnet40_10(
     Args:
         num_classes: Number of output classes (default: 100 for CIFAR-100)
         dropout_rate: Dropout rate for regularization (default: 0.3)
+        drop_path_rate: Stochastic depth drop rate (default: 0.0, recommended: 0.3)
 
     Returns:
         Wide ResNet-40-10 model instance
@@ -328,12 +434,14 @@ def wide_resnet40_10(
         widen_factor=10,
         num_classes=num_classes,
         dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
     )
 
 
 def wide_resnet28_12(
     num_classes: int = 100,
     dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
 ) -> WideResNet:
     """
     Construct Wide ResNet-28-12 model for CIFAR datasets.
@@ -349,6 +457,7 @@ def wide_resnet28_12(
     Args:
         num_classes: Number of output classes (default: 100 for CIFAR-100)
         dropout_rate: Dropout rate for regularization (default: 0.3)
+        drop_path_rate: Stochastic depth drop rate (default: 0.0, recommended: 0.2)
 
     Returns:
         Wide ResNet-28-12 model instance
@@ -358,4 +467,5 @@ def wide_resnet28_12(
         widen_factor=12,
         num_classes=num_classes,
         dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
     )

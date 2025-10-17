@@ -14,9 +14,9 @@
 | #001 | 历史 | - | ResNet50 (from scratch) | 0.77 | - | ✅ | 历史基准 |
 | - | - | - | - | - | - | - | - |
 | #100 | 2025-10-17 | P1 | Wide ResNet-28-10 (baseline) | 0.7802 | 0.78 | ✅ | +0.01 vs ResNet50 |
-| #101 | TBD | P1 | Wide ResNet-28-10 + RandAugment | - | - | 🟡 | 计划中 |
-| #102 | TBD | P1 | Wide ResNet-28-10 + GridMask | - | - | 🟡 | 计划中 |
-| #103 | TBD | P1 | Wide ResNet-28-10 + Stochastic Depth | - | - | 🟡 | 计划中 |
+| #101 | - | - | (Merged into #103) | - | - | ⏭️ | 跳过 |
+| #102 | TBD | P1 | Wide ResNet-28-10 + GridMask | - | - | 🟡 | 低优先级 |
+| #103 | 2025-10-17 | P1.5 | WRN-28-10 + SD + RA | - | - | 🟡 | 待运行 |
 | #104 | TBD | P1 | Wide ResNet-28-10 (优化超参) | - | - | 🟡 | 计划中 |
 | - | - | - | - | - | - | - | - |
 | #200 | TBD | P2 | ConvNeXt-Tiny (baseline) | - | - | 🟡 | 计划中 |

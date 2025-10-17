@@ -381,6 +381,7 @@ def create_model(
         "wide_resnet28_12",
     ] = "resnet18",
     dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
 ):
     """
     Create and initialize the model from scratch.
@@ -401,6 +402,7 @@ def create_model(
             - "wide_resnet40_10": WRN-40-10 (55.8M params) ← Phase 3 option
             - "wide_resnet28_12": WRN-28-12 (52.8M params) ← Alternative
         dropout_rate: Dropout rate for regularization (default: 0.3)
+        drop_path_rate: Stochastic depth rate (default: 0.0, recommended: 0.2 for Wide ResNet)
 
     Returns:
         Model instance moved to the specified device
@@ -434,11 +436,23 @@ def create_model(
     elif model_type == "resnet50":
         model = resnet50_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
     elif model_type == "wide_resnet28_10":
-        model = wide_resnet28_10(num_classes=num_classes, dropout_rate=dropout_rate)
+        model = wide_resnet28_10(
+            num_classes=num_classes,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
     elif model_type == "wide_resnet40_10":
-        model = wide_resnet40_10(num_classes=num_classes, dropout_rate=dropout_rate)
+        model = wide_resnet40_10(
+            num_classes=num_classes,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
     elif model_type == "wide_resnet28_12":
-        model = wide_resnet28_12(num_classes=num_classes, dropout_rate=dropout_rate)
+        model = wide_resnet28_12(
+            num_classes=num_classes,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
     else:
         raise ValueError(
             f"Unknown model_type: {model_type}. "

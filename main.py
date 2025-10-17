@@ -110,6 +110,32 @@ def parse_args():
         help="Augmentation strength: light (recommended for Focal Loss), medium, strong (too aggressive for 32x32)",
     )
     parser.add_argument(
+        "--use_randaugment",
+        action="store_true",
+        default=True,
+        help="Use RandAugment (automatic augmentation search). "
+        "Recommended for improved generalization. Default: enabled.",
+    )
+    parser.add_argument(
+        "--no_randaugment",
+        dest="use_randaugment",
+        action="store_false",
+        help="Disable RandAugment",
+    )
+    parser.add_argument(
+        "--randaugment_n",
+        type=int,
+        default=2,
+        help="RandAugment N: number of augmentation operations to apply (default: 2, range: 1-3)",
+    )
+    parser.add_argument(
+        "--randaugment_m",
+        type=int,
+        default=9,
+        help="RandAugment M: magnitude of augmentations (default: 9, range: 0-10). "
+        "Higher values = stronger augmentation. Recommended: 9 for CIFAR-100.",
+    )
+    parser.add_argument(
         "--mixup_alpha",
         type=float,
         default=0.25,
@@ -160,6 +186,14 @@ def parse_args():
         type=float,
         default=0.3,
         help="Dropout rate for regularization. Recommended: 0.3 for Wide ResNet, 0.5 for ResNet",
+    )
+    parser.add_argument(
+        "--drop_path_rate",
+        type=float,
+        default=0.2,
+        help="Stochastic Depth (DropPath) rate for Wide ResNet (0.0=disabled, 0.2=recommended). "
+        "Randomly drops residual branches during training to reduce overfitting. "
+        "Only effective for Wide ResNet models. ResNet models ignore this parameter.",
     )
     parser.add_argument(
         "--use_compile",
@@ -412,6 +446,7 @@ def build_model(args) -> nn.Module:
         device=args.device,
         model_type=args.model,
         dropout_rate=args.dropout,
+        drop_path_rate=args.drop_path_rate,
     )
 
     # Log model parameters
@@ -513,6 +548,9 @@ def train(args, model: nn.Module):
         use_online_aug=args.use_online_aug,
         augmentation_strength=args.aug_strength,
         use_cutmix=args.use_cutmix,
+        use_randaugment=args.use_randaugment,
+        randaugment_n=args.randaugment_n,
+        randaugment_m=args.randaugment_m,
     )
     steps_per_epoch = len(train_loader)
 
