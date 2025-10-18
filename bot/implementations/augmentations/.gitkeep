@@ -1,9 +1,0 @@
-# 高级数据增强实现
-
-此目录包含各种高级数据增强技术的实现：
-
-- RandAugment
-- GridMask
-- FMix
-- AutoAugment
-

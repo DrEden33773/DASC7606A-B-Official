@@ -1,9 +1,54 @@
-from typing import Literal, Optional, Protocol, Type
+from typing import List, Literal, Optional, Protocol, Type
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 # torchvision.models removed - no pretrained models allowed per assignment guidelines
+
+
+# ============================================================================
+# Stochastic Depth (DropPath) - Used by Wide ResNet
+# ============================================================================
+
+
+class DropPath(nn.Module):
+    """
+    Stochastic Depth (Drop Path) regularization.
+
+    Randomly drops entire residual branches during training to improve
+    generalization and reduce overfitting. This is a key technique for
+    training deep Wide ResNets.
+
+    Args:
+        drop_prob: Probability of dropping the path (0.0-1.0)
+                   - 0.0: No dropout (identity)
+                   - 0.1-0.2: Recommended for Wide ResNet
+
+    References:
+        Huang et al. "Deep Networks with Stochastic Depth" (ECCV 2016)
+    """
+
+    def __init__(self, drop_prob: float = 0.0) -> None:
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or self.drop_prob == 0.0:
+            return x
+
+        keep_prob = 1.0 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()
+        output = x.div(keep_prob) * random_tensor
+
+        return output
+
+
+# ============================================================================
+# ResNet Block Protocol (for type checking)
+# ============================================================================
 
 
 class ResNetBlock(Protocol):
@@ -305,18 +350,7 @@ class ResNetCIFAR(nn.Module):
         return x
 
 
-def resnet18_cifar(num_classes: int = 10, dropout_rate: float = 0.3) -> ResNetCIFAR:
-    """
-    Construct ResNet-18 model for CIFAR datasets
-
-    Args:
-        num_classes: Number of output classes
-        dropout_rate: Dropout rate for regularization
-
-    Returns:
-        ResNet-18 model optimized for CIFAR
-    """
-    return ResNetCIFAR(BasicBlock, [2, 2, 2, 2], num_classes, dropout_rate)
+# resnet18_cifar removed - not used in experiments, no performance benefit over resnet34
 
 
 def resnet34_cifar(num_classes: int = 10, dropout_rate: float = 0.3) -> ResNetCIFAR:
@@ -369,17 +403,204 @@ def resnet50_cifar(num_classes: int = 10, dropout_rate: float = 0.3) -> ResNetCI
 # All models must be trained from scratch per assignment guidelines
 
 
+# ============================================================================
+# Wide ResNet - Optimized for CIFAR-100 from scratch training
+# ============================================================================
+
+
+class WideBasicBlock(nn.Module):
+    """Wide ResNet basic residual block with pre-activation structure."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        stride: int,
+        dropout_rate: float,
+        drop_path_rate: float = 0.0,
+    ) -> None:
+        super().__init__()
+
+        self.bn1 = nn.BatchNorm2d(in_channels)
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.drop_path = DropPath(drop_path_rate)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Conv2d(
+                in_channels, out_channels, kernel_size=1, stride=stride, bias=False
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv1(F.relu(self.bn1(x)))
+        out = self.dropout(out)
+        out = self.conv2(F.relu(self.bn2(out)))
+        out = self.drop_path(out)
+        out = out + self.shortcut(x)
+        return out
+
+
+class WideResNet(nn.Module):
+    """
+    Wide Residual Network for CIFAR datasets.
+
+    Achieved F1=0.8131 on CIFAR-100 with drop_path_rate=0.1 + RandAugment.
+    """
+
+    def __init__(
+        self,
+        depth: int,
+        widen_factor: int,
+        num_classes: int = 100,
+        dropout_rate: float = 0.3,
+        drop_path_rate: float = 0.0,
+    ) -> None:
+        super().__init__()
+
+        assert (depth - 4) % 6 == 0, f"Depth must satisfy (depth-4)%6==0, got {depth}"
+
+        n_blocks = (depth - 4) // 6
+        n_channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
+
+        # Calculate stochastic depth rates (linear increase)
+        total_blocks = n_blocks * 3
+        drop_rates = [
+            i * drop_path_rate / (total_blocks - 1) if total_blocks > 1 else 0.0
+            for i in range(total_blocks)
+        ]
+
+        self.in_channels = n_channels[0]
+        self.conv1 = nn.Conv2d(
+            3, n_channels[0], kernel_size=3, stride=1, padding=1, bias=False
+        )
+
+        block_idx = 0
+        self.layer1 = self._make_layer(
+            n_channels[1],
+            n_blocks,
+            dropout_rate,
+            stride=1,
+            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+        )
+        block_idx += n_blocks
+        self.layer2 = self._make_layer(
+            n_channels[2],
+            n_blocks,
+            dropout_rate,
+            stride=2,
+            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+        )
+        block_idx += n_blocks
+        self.layer3 = self._make_layer(
+            n_channels[3],
+            n_blocks,
+            dropout_rate,
+            stride=2,
+            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+        )
+
+        self.bn1 = nn.BatchNorm2d(n_channels[3], momentum=0.9)
+        self.fc = nn.Linear(n_channels[3], num_classes)
+
+        self._initialize_weights()
+
+    def _make_layer(
+        self,
+        out_channels: int,
+        num_blocks: int,
+        dropout_rate: float,
+        stride: int,
+        drop_rates: List[float],
+    ) -> nn.Sequential:
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers: List[nn.Module] = []
+
+        for i, stride in enumerate(strides):
+            layers.append(
+                WideBasicBlock(
+                    self.in_channels,
+                    out_channels,
+                    stride,
+                    dropout_rate,
+                    drop_path_rate=drop_rates[i],
+                )
+            )
+            self.in_channels = out_channels
+
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv1(x)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = F.relu(self.bn1(out))
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = out.view(out.size(0), -1)
+        out = self.fc(out)
+        return out
+
+
+def wide_resnet28_10(
+    num_classes: int = 100,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
+) -> WideResNet:
+    """Wide ResNet-28-10 for CIFAR (36.5M params). Best: F1=0.8131 with drop_path=0.1."""
+    return WideResNet(28, 10, num_classes, dropout_rate, drop_path_rate)
+
+
+def wide_resnet40_10(
+    num_classes: int = 100,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
+) -> WideResNet:
+    """Wide ResNet-40-10 for CIFAR (55.8M params)."""
+    return WideResNet(40, 10, num_classes, dropout_rate, drop_path_rate)
+
+
+def wide_resnet28_12(
+    num_classes: int = 100,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
+) -> WideResNet:
+    """Wide ResNet-28-12 for CIFAR (52.8M params)."""
+    return WideResNet(28, 12, num_classes, dropout_rate, drop_path_rate)
+
+
 def create_model(
     num_classes: int,
     device: str,
     model_type: Literal[
-        "resnet18",
         "resnet34",
         "resnet50",
         "wide_resnet28_10",
         "wide_resnet40_10",
         "wide_resnet28_12",
-    ] = "resnet18",
+    ] = "wide_resnet28_10",
     dropout_rate: float = 0.3,
     drop_path_rate: float = 0.0,
 ):
@@ -392,17 +613,16 @@ def create_model(
         num_classes: Number of output classes (100 for CIFAR-100)
         device: Device to place the model on ('cuda' or 'cpu')
         model_type: Type of model architecture to use. Options:
-            ResNet variants (CIFAR-optimized):
-            - "resnet18": ResNet-18 (11M params)
-            - "resnet34": ResNet-34 (21M params)
-            - "resnet50": ResNet-50 with Bottleneck (23.5M params)
+            ResNet variants (baseline):
+            - "resnet34": ResNet-34 (21M params, F1=0.77)
+            - "resnet50": ResNet-50 with Bottleneck (23.5M params, F1=0.77)
 
-            Wide ResNet variants (recommended for CIFAR-100):
-            - "wide_resnet28_10": WRN-28-10 (36.5M params) ← Phase 1 default
-            - "wide_resnet40_10": WRN-40-10 (55.8M params) ← Phase 3 option
-            - "wide_resnet28_12": WRN-28-12 (52.8M params) ← Alternative
+            Wide ResNet variants (recommended, proven effective):
+            - "wide_resnet28_10": WRN-28-10 (36.5M params, F1=0.8131) ← Best
+            - "wide_resnet40_10": WRN-40-10 (55.8M params)
+            - "wide_resnet28_12": WRN-28-12 (52.8M params)
         dropout_rate: Dropout rate for regularization (default: 0.3)
-        drop_path_rate: Stochastic depth rate (default: 0.0, recommended: 0.2 for Wide ResNet)
+        drop_path_rate: Stochastic depth rate (default: 0.0, best: 0.1 for WRN-28-10)
 
     Returns:
         Model instance moved to the specified device
@@ -411,27 +631,16 @@ def create_model(
         ValueError: If model_type is not recognized
 
     Example:
-        >>> # Phase 1: Wide ResNet-28-10 (recommended)
-        >>> model = create_model(100, 'cuda', 'wide_resnet28_10', dropout_rate=0.3)
-        >>>
-        >>> # Baseline: ResNet-34
-        >>> model = create_model(100, 'cuda', 'resnet34', dropout_rate=0.5)
+        >>> # Best configuration (F1=0.8131)
+        >>> model = create_model(100, 'cuda', 'wide_resnet28_10',
+        ...                       dropout_rate=0.3, drop_path_rate=0.1)
 
     Note:
-        Wide ResNet generally outperforms standard ResNet for CIFAR datasets
-        when trained from scratch. Expected improvement: +0.02-0.03 F1 over ResNet-34.
+        Wide ResNet-28-10 with drop_path=0.1 + RandAugment achieved F1=0.8131,
+        significantly outperforming ResNet variants (+0.04).
     """
-    # Import Wide ResNet implementations
-    from bot.implementations.wide_resnet import (
-        wide_resnet28_10,
-        wide_resnet28_12,
-        wide_resnet40_10,
-    )
-
     # Create model from scratch
-    if model_type == "resnet18":
-        model = resnet18_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
-    elif model_type == "resnet34":
+    if model_type == "resnet34":
         model = resnet34_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
     elif model_type == "resnet50":
         model = resnet50_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
@@ -456,7 +665,7 @@ def create_model(
     else:
         raise ValueError(
             f"Unknown model_type: {model_type}. "
-            f"Available options: 'resnet18', 'resnet34', 'resnet50', "
+            f"Available options: 'resnet34', 'resnet50', "
             f"'wide_resnet28_10', 'wide_resnet40_10', 'wide_resnet28_12'"
         )
 

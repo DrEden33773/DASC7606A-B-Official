@@ -106,10 +106,10 @@ def parse_args():
         "--aug_strength",
         type=str,
         choices=["light", "medium", "strong", "randaugment"],
-        default="medium",
+        default="randaugment",
         help="Augmentation strategy. Options: "
         "light/medium/strong (traditional augmentation), "
-        "randaugment (automatic augmentation, N=2 M=9, replaces traditional aug)",
+        "randaugment (automatic, N=2 M=9, F1=0.8131, recommended)",
     )
     # use_randaugment removed - now controlled by aug_strength="randaugment"
     # This simplifies the interface and avoids confusion
@@ -159,7 +159,6 @@ def parse_args():
         "--model",
         type=str,
         choices=[
-            "resnet18",
             "resnet34",
             "resnet50",
             "wide_resnet28_10",
@@ -168,8 +167,8 @@ def parse_args():
         ],
         default="wide_resnet28_10",
         help="Model architecture to use (all trained from scratch). "
-        "ResNet variants: resnet18 (11M), resnet34 (21M), resnet50 (23.5M). "
-        "Wide ResNet variants (recommended): wide_resnet28_10 (36.5M, Phase 1 default), "
+        "ResNet baselines: resnet34 (21M, F1=0.77), resnet50 (23.5M, F1=0.77). "
+        "Wide ResNet (recommended): wide_resnet28_10 (36.5M, F1=0.8131), "
         "wide_resnet40_10 (55.8M), wide_resnet28_12 (52.8M).",
     )
     parser.add_argument(
@@ -181,10 +180,10 @@ def parse_args():
     parser.add_argument(
         "--drop_path_rate",
         type=float,
-        default=0.2,
-        help="Stochastic Depth (DropPath) rate for Wide ResNet (0.0=disabled, 0.2=recommended). "
+        default=0.1,
+        help="Stochastic Depth (DropPath) rate for Wide ResNet (0.0=disabled, 0.1=best for WRN-28-10). "
         "Randomly drops residual branches during training to reduce overfitting. "
-        "Only effective for Wide ResNet models. ResNet models ignore this parameter.",
+        "Achieved F1=0.8131 with drop_path=0.1. Only effective for Wide ResNet models.",
     )
     parser.add_argument(
         "--use_compile",

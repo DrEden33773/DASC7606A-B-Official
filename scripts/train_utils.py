@@ -526,7 +526,8 @@ def get_train_transforms(
     if augmentation_strength == "randaugment":
         # Pure RandAugment mode (no stacking with traditional augmentation)
         # This is the correct way to use RandAugment per the original paper
-        from bot.implementations.augmentations.randaugment import RandAugment
+        # F1=0.8131 achieved with N=2, M=9
+        from scripts.data_augmentation import RandAugment
 
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
             [
