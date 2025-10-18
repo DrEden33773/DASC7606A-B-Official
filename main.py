@@ -164,12 +164,14 @@ def parse_args():
             "wide_resnet28_10",
             "wide_resnet40_10",
             "wide_resnet28_12",
+            "convnext_tiny",
+            "convnext_small",
         ],
         default="wide_resnet28_10",
-        help="Model architecture to use (all trained from scratch). "
-        "ResNet baselines: resnet34 (21M, F1=0.77), resnet50 (23.5M, F1=0.77). "
-        "Wide ResNet (recommended): wide_resnet28_10 (36.5M, F1=0.8131), "
-        "wide_resnet40_10 (55.8M), wide_resnet28_12 (52.8M).",
+        help="Model architecture (all from scratch). "
+        "Phase 1: wide_resnet28_10 (36.5M, F1=0.8131). "
+        "Phase 2: convnext_tiny (28M, target F1≥0.83). "
+        "Others: resnet34/50 (baselines), wide_resnet40_10/28_12, convnext_small.",
     )
     parser.add_argument(
         "--dropout",

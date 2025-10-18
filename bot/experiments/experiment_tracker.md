@@ -23,7 +23,7 @@
 | #104c | TBD | P1 | WRN-28-10 + SD(0.15) + medium | - | - | 🟡 | 备选 |
 | #104d | TBD | P1 | WRN-28-10 + SD(0.1) + RandAug(M=7) | - | - | 🟡 | 备选 |
 | - | - | - | - | - | - | - | - |
-| #200 | TBD | P2 | ConvNeXt-Tiny (baseline) | - | - | 🟡 | 计划中 |
+| #200 | 2025-10-17 | P2 | ConvNeXt-Tiny (baseline, wd=0.05) | - | - | 🟡 | 待运行 |
 | #201 | TBD | P2 | ConvNeXt-Tiny + SAM | - | - | 🟡 | 计划中 |
 | #202 | TBD | P2 | Wide ResNet + SAM | - | - | 🟡 | 计划中 |
 | #203 | TBD | P2 | 自蒸馏 (ensemble → single) | - | - | 🟡 | 计划中 |
