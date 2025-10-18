@@ -487,9 +487,10 @@ class AlbumentationsTransform:
 
 def get_train_transforms(
     dataset_type: Literal["cifar10", "cifar100"] = "cifar100",
-    augmentation_strength: Literal["light", "medium", "strong"] = "light",
+    augmentation_strength: Literal[
+        "light", "medium", "strong", "randaugment"
+    ] = "light",
     use_cutmix: bool = False,
-    use_randaugment: bool = False,
     randaugment_n: int = 2,
     randaugment_m: int = 9,
 ) -> AlbumentationsTransform:
@@ -498,11 +499,14 @@ def get_train_transforms(
 
     Args:
         dataset_type: Type of dataset ("cifar10" or "cifar100")
-        augmentation_strength: Strength of augmentation
-        use_cutmix: Whether CutMix is used (affects CoarseDropout)
-        use_randaugment: Whether to use RandAugment (default: False)
-        randaugment_n: Number of RandAugment operations (default: 2)
-        randaugment_m: Magnitude of RandAugment (0-10, default: 9)
+        augmentation_strength: Augmentation strategy. Options:
+            - "light": Light traditional augmentation
+            - "medium": Medium traditional augmentation
+            - "strong": Strong traditional augmentation
+            - "randaugment": Pure RandAugment (replaces traditional aug)
+        use_cutmix: Whether CutMix is used (affects CoarseDropout in traditional aug)
+        randaugment_n: Number of RandAugment operations (default: 2, used when aug_strength="randaugment")
+        randaugment_m: Magnitude of RandAugment (0-10, default: 9, used when aug_strength="randaugment")
 
     Returns:
         AlbumentationsTransform wrapper with augmentation pipeline
@@ -519,18 +523,24 @@ def get_train_transforms(
         std = (0.5, 0.5, 0.5)
 
     # Build augmentation pipeline based on strength
-    # If RandAugment is enabled, prepend it to the pipeline
-    randaugment_transforms: list = []
-    if use_randaugment:
+    if augmentation_strength == "randaugment":
+        # Pure RandAugment mode (no stacking with traditional augmentation)
+        # This is the correct way to use RandAugment per the original paper
         from bot.implementations.augmentations.randaugment import RandAugment
 
-        randaugment_transforms = [RandAugment(n=randaugment_n, m=randaugment_m)]
+        augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
+            [
+                RandAugment(n=randaugment_n, m=randaugment_m),
+                A.HorizontalFlip(p=0.5),  # Basic geometric transform
+                A.Normalize(mean=mean, std=std),
+                ToTensorV2(),
+            ]
+        )
 
-    if augmentation_strength == "light":
+    elif augmentation_strength == "light":
         # Light augmentations - suitable for CIFAR and Focal Loss
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
-            randaugment_transforms
-            + [
+            [
                 A.Rotate(limit=15, p=0.8),
                 A.HorizontalFlip(p=0.5),
                 A.ShiftScaleRotate(
@@ -557,10 +567,9 @@ def get_train_transforms(
         )
 
     elif augmentation_strength == "medium":
-        # Medium augmentations
+        # Medium augmentations (traditional)
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
-            randaugment_transforms
-            + [
+            [
                 A.Rotate(limit=20, p=0.8),
                 A.HorizontalFlip(p=0.5),
                 A.ShiftScaleRotate(
@@ -604,10 +613,9 @@ def get_train_transforms(
         )
 
     elif augmentation_strength == "strong":
-        # Strong augmentations (not recommended for 32x32 images)
+        # Strong augmentations (traditional, not recommended for 32x32 images)
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
-            randaugment_transforms
-            + [
+            [
                 A.Rotate(limit=25, p=0.8),
                 A.HorizontalFlip(p=0.5),
                 A.ShiftScaleRotate(
@@ -732,9 +740,10 @@ def load_data(
     dataset_type: Literal["cifar10", "cifar100"] = "cifar100",
     manual_seed: int = 42,
     use_online_aug: bool = True,
-    augmentation_strength: Literal["light", "medium", "strong"] = "light",
+    augmentation_strength: Literal[
+        "light", "medium", "strong", "randaugment"
+    ] = "light",
     use_cutmix: bool = False,
-    use_randaugment: bool = False,
     randaugment_n: int = 2,
     randaugment_m: int = 9,
 ):
@@ -769,7 +778,6 @@ def load_data(
             dataset_type=dataset_type,
             augmentation_strength=augmentation_strength,
             use_cutmix=use_cutmix,
-            use_randaugment=use_randaugment,
             randaugment_n=randaugment_n,
             randaugment_m=randaugment_m,
         )

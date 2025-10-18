@@ -105,23 +105,14 @@ def parse_args():
     parser.add_argument(
         "--aug_strength",
         type=str,
-        choices=["light", "medium", "strong"],
+        choices=["light", "medium", "strong", "randaugment"],
         default="medium",
-        help="Augmentation strength: light (recommended for Focal Loss), medium, strong (too aggressive for 32x32)",
+        help="Augmentation strategy. Options: "
+        "light/medium/strong (traditional augmentation), "
+        "randaugment (automatic augmentation, N=2 M=9, replaces traditional aug)",
     )
-    parser.add_argument(
-        "--use_randaugment",
-        action="store_true",
-        default=True,
-        help="Use RandAugment (automatic augmentation search). "
-        "Recommended for improved generalization. Default: enabled.",
-    )
-    parser.add_argument(
-        "--no_randaugment",
-        dest="use_randaugment",
-        action="store_false",
-        help="Disable RandAugment",
-    )
+    # use_randaugment removed - now controlled by aug_strength="randaugment"
+    # This simplifies the interface and avoids confusion
     parser.add_argument(
         "--randaugment_n",
         type=int,
@@ -548,7 +539,6 @@ def train(args, model: nn.Module):
         use_online_aug=args.use_online_aug,
         augmentation_strength=args.aug_strength,
         use_cutmix=args.use_cutmix,
-        use_randaugment=args.use_randaugment,
         randaugment_n=args.randaugment_n,
         randaugment_m=args.randaugment_m,
     )

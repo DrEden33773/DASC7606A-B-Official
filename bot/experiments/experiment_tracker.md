@@ -16,8 +16,12 @@
 | #100 | 2025-10-17 | P1 | Wide ResNet-28-10 (baseline) | 0.7802 | 0.78 | ✅ | +0.01 vs ResNet50 |
 | #101 | - | - | (Merged into #103) | - | - | ⏭️ | 跳过 |
 | #102 | TBD | P1 | Wide ResNet-28-10 + GridMask | - | - | 🟡 | 低优先级 |
-| #103 | 2025-10-17 | P1.5 | WRN-28-10 + SD + RA | - | - | 🟡 | 待运行 |
-| #104 | TBD | P1 | Wide ResNet-28-10 (优化超参) | - | - | 🟡 | 计划中 |
+| #103 | 2025-10-17 | P1.5 | WRN-28-10 + SD(0.2) + RA(叠加) | - | 0.75 | 🔴 | 增强过度 |
+| #103-Rev | 2025-10-17 | P1.5 | WRN-28-10 + SD(0.2) only | 0.7791 | 0.77 | ⚠️ | SD过强 |
+| #104a | TBD | P1 | WRN-28-10 + SD(0.1) + medium | - | - | 🟡 | 计划中 |
+| #104b | TBD | P1 | WRN-28-10 + SD(0.1) + RandAug(pure) | - | - | 🟡 | 推荐 |
+| #104c | TBD | P1 | WRN-28-10 + SD(0.15) + medium | - | - | 🟡 | 备选 |
+| #104d | TBD | P1 | WRN-28-10 + SD(0.1) + RandAug(M=7) | - | - | 🟡 | 备选 |
 | - | - | - | - | - | - | - | - |
 | #200 | TBD | P2 | ConvNeXt-Tiny (baseline) | - | - | 🟡 | 计划中 |
 | #201 | TBD | P2 | ConvNeXt-Tiny + SAM | - | - | 🟡 | 计划中 |
