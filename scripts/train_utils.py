@@ -5,6 +5,7 @@ import albumentations as A
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from albumentations.pytorch import ToTensorV2
 from PIL import Image
@@ -350,6 +351,62 @@ def mixup_criterion(
         Mixed loss value
     """
     return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+
+def self_distillation_loss(
+    all_logits: list[torch.Tensor],
+    labels: torch.Tensor,
+    temperature: float = 4.0,
+    alpha: float = 0.9,
+) -> torch.Tensor:
+    """
+    Self-distillation loss (Be Your Own Teacher).
+
+    Combines three types of losses:
+    1. Cross-entropy loss for all classifiers (hard labels)
+    2. KL divergence loss (shallow classifiers learn from deep classifier)
+
+    Args:
+        all_logits: List of logits from all classifiers [logits1, logits2, logits3, logits4]
+                    where logits4 is the deepest (teacher)
+        labels: True labels [batch_size]
+        temperature: Temperature for knowledge distillation (default: 4.0)
+        alpha: Weight for soft labels (default: 0.9)
+               loss = alpha * KL + (1-alpha) * CE
+
+    Returns:
+        Total self-distillation loss
+
+    Reference:
+        Zhang et al. "Be Your Own Teacher" (2019)
+        https://arxiv.org/abs/1905.08094
+    """
+    num_classifiers = len(all_logits)
+    teacher_logits = all_logits[-1]  # Deepest classifier as teacher
+
+    total_loss: torch.Tensor = torch.tensor(0.0, device=all_logits[0].device)
+
+    # Loss 1: Cross-entropy with hard labels (all classifiers)
+    for logits in all_logits:
+        ce_loss = F.cross_entropy(logits, labels)
+        total_loss = total_loss + (1 - alpha) * ce_loss
+
+    # Loss 2: KL divergence (shallow learn from deep)
+    for i in range(num_classifiers - 1):  # Exclude teacher itself
+        student_logits = all_logits[i]
+
+        # Soft targets from teacher
+        soft_student = F.log_softmax(student_logits / temperature, dim=1)
+        soft_teacher = F.softmax(teacher_logits / temperature, dim=1)
+
+        # KL divergence
+        kl_loss = F.kl_div(soft_student, soft_teacher, reduction="batchmean") * (
+            temperature**2
+        )
+
+        total_loss = total_loss + alpha * kl_loss
+
+    return total_loss
 
 
 class ModelEMA:
@@ -1221,6 +1278,9 @@ def train_epoch(
     mixup_alpha: float = 0.0,
     cutmix_alpha: float = 0.0,
     use_cutmix: bool = False,
+    use_self_distill: bool = False,
+    distill_temperature: float = 4.0,
+    distill_alpha: float = 0.9,
 ) -> Tuple[float, float]:
     """
     Train the model for one epoch with optional mixed precision training, gradient clipping, Mixup, and CutMix.
@@ -1300,21 +1360,58 @@ def train_epoch(
         # Forward pass with optional mixed precision
         if use_amp:
             with torch.amp.autocast_mode.autocast(device_type=DEVICE_TYPE):
+                # Self-distillation: get all classifier outputs
+                if use_self_distill:
+                    all_logits = model(inputs, return_all=True)  # type: ignore
+                    outputs = all_logits[-1]  # Final classifier for accuracy
+
+                    # Compute self-distillation loss
+                    if (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0:
+                        # Mixup/CutMix: apply to all classifiers
+                        loss = lam * self_distillation_loss(
+                            all_logits, targets_a, distill_temperature, distill_alpha
+                        ) + (1 - lam) * self_distillation_loss(
+                            all_logits, targets_b, distill_temperature, distill_alpha
+                        )
+                    else:
+                        loss = self_distillation_loss(
+                            all_logits, labels, distill_temperature, distill_alpha
+                        )
+                else:
+                    # Normal training
+                    outputs = model(inputs)
+                    if (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0:
+                        loss = mixup_criterion(
+                            criterion, outputs, targets_a, targets_b, lam
+                        )
+                    else:
+                        loss = criterion(outputs, labels)
+        else:
+            # Self-distillation: get all classifier outputs
+            if use_self_distill:
+                all_logits = model(inputs, return_all=True)  # type: ignore
+                outputs = all_logits[-1]  # Final classifier for accuracy
+
+                # Compute self-distillation loss
+                if (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0:
+                    loss = lam * self_distillation_loss(
+                        all_logits, targets_a, distill_temperature, distill_alpha
+                    ) + (1 - lam) * self_distillation_loss(
+                        all_logits, targets_b, distill_temperature, distill_alpha
+                    )
+                else:
+                    loss = self_distillation_loss(
+                        all_logits, labels, distill_temperature, distill_alpha
+                    )
+            else:
+                # Normal training
                 outputs = model(inputs)
-                # Use mixup_criterion for both Mixup and CutMix (same loss calculation)
                 if (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0:
                     loss = mixup_criterion(
                         criterion, outputs, targets_a, targets_b, lam
                     )
                 else:
                     loss = criterion(outputs, labels)
-        else:
-            outputs = model(inputs)
-            # Use mixup_criterion for both Mixup and CutMix (same loss calculation)
-            if (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0:
-                loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
-            else:
-                loss = criterion(outputs, labels)
 
         # Backward pass and optimize
         if use_amp and scaler:

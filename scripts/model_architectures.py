@@ -768,6 +768,101 @@ class WideResNet(nn.Module):
         return out
 
 
+class WideResNetSelfDistill(WideResNet):
+    """
+    Wide ResNet with Self-Distillation (Be Your Own Teacher).
+
+    Adds intermediate classifiers after each layer group for self-distillation.
+    During training, deep layers teach shallow layers. During inference, only
+    the final classifier is used.
+
+    Reference:
+        Zhang et al. "Be Your Own Teacher: Improve the Performance of
+        Convolutional Neural Networks via Self Distillation" (2019)
+        https://arxiv.org/abs/1905.08094
+    """
+
+    def __init__(
+        self,
+        depth: int,
+        widen_factor: int,
+        num_classes: int = 100,
+        dropout_rate: float = 0.3,
+        drop_path_rate: float = 0.0,
+    ) -> None:
+        # Initialize base Wide ResNet
+        super().__init__(depth, widen_factor, num_classes, dropout_rate, drop_path_rate)
+
+        # Calculate channel dimensions
+        n_channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
+
+        # Create intermediate classifiers (student classifiers)
+        self.classifier1 = self._make_auxiliary_classifier(n_channels[1], num_classes)
+        self.classifier2 = self._make_auxiliary_classifier(n_channels[2], num_classes)
+        self.classifier3 = self._make_auxiliary_classifier(n_channels[3], num_classes)
+
+    def _make_auxiliary_classifier(
+        self, in_channels: int, num_classes: int
+    ) -> nn.Module:
+        """
+        Create auxiliary classifier for intermediate supervision.
+
+        Uses bottleneck structure to reduce interference with main network.
+        """
+        return nn.Sequential(
+            # Bottleneck: reduce channels by half
+            nn.Conv2d(in_channels, in_channels // 2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(in_channels // 2),
+            nn.ReLU(inplace=True),
+            # Global average pooling
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            # Classifier
+            nn.Linear(in_channels // 2, num_classes),
+        )
+
+    def forward(  # type: ignore[override]
+        self, x: torch.Tensor, return_all: bool = False
+    ) -> torch.Tensor | List[torch.Tensor]:
+        """
+        Forward pass with optional intermediate outputs.
+
+        Args:
+            x: Input tensor [batch_size, 3, 32, 32]
+            return_all: If True, return all classifier outputs (for training)
+                        If False, return only final output (for inference)
+
+        Returns:
+            If return_all=False: Final logits [batch_size, num_classes]
+            If return_all=True: [logits1, logits2, logits3, logits4]
+        """
+        # Initial conv
+        out = self.conv1(x)
+
+        # Section 1: layer1
+        out = self.layer1(out)
+        logits1 = self.classifier1(out)
+
+        # Section 2: layer2
+        out = self.layer2(out)
+        logits2 = self.classifier2(out)
+
+        # Section 3: layer3
+        out = self.layer3(out)
+        logits3 = self.classifier3(out)
+
+        # Final classifier (teacher)
+        out = F.relu(self.bn1(out))
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = out.view(out.size(0), -1)
+        logits4 = self.fc(out)
+
+        if return_all:
+            return [logits1, logits2, logits3, logits4]
+        else:
+            return logits4
+
+
 def wide_resnet28_10(
     num_classes: int = 100,
     dropout_rate: float = 0.3,
@@ -775,6 +870,19 @@ def wide_resnet28_10(
 ) -> WideResNet:
     """Wide ResNet-28-10 for CIFAR (36.5M params). Best: F1=0.8131 with drop_path=0.1."""
     return WideResNet(28, 10, num_classes, dropout_rate, drop_path_rate)
+
+
+def wide_resnet28_10_selfdistill(
+    num_classes: int = 100,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
+) -> WideResNetSelfDistill:
+    """
+    Wide ResNet-28-10 with Self-Distillation (BYOT).
+
+    Target: F1 ≥ 0.85 (based on +3-4% improvement from paper)
+    """
+    return WideResNetSelfDistill(28, 10, num_classes, dropout_rate, drop_path_rate)
 
 
 def wide_resnet40_10(
@@ -802,6 +910,7 @@ def create_model(
         "resnet34",
         "resnet50",
         "wide_resnet28_10",
+        "wide_resnet28_10_selfdistill",
         "wide_resnet40_10",
         "wide_resnet28_12",
         "convnext_tiny",
@@ -821,14 +930,15 @@ def create_model(
         model_type: Type of model architecture to use. Options:
             Phase 1 (proven):
             - "wide_resnet28_10": WRN-28-10 (36.5M params, F1=0.8131) ← Phase 1 best
+
+            Phase 2.5 (self-distillation, target F1≥0.85):
+            - "wide_resnet28_10_selfdistill": WRN-28-10 + BYOT (39M params) ← Recommended
+
+            Others:
             - "wide_resnet40_10": WRN-40-10 (55.8M params)
-            - "wide_resnet28_12": WRN-28-12 (52.8M params)
-
-            Phase 2 (modern):
-            - "convnext_tiny": ConvNeXt-Tiny (28M params) ← Phase 2 target
-            - "convnext_small": ConvNeXt-Small (50M params) ← Phase 3 option
-
-            Baselines:
+            - "wide_resnet28_12": WRN-28-12 (52.8M params, F1=0.80)
+            - "convnext_tiny": ConvNeXt-Tiny (28M params, F1=0.79)
+            - "convnext_small": ConvNeXt-Small (50M params)
             - "resnet34": ResNet-34 (21M params, F1=0.77)
             - "resnet50": ResNet-50 (23.5M params, F1=0.77)
         dropout_rate: Dropout rate (only for ResNet/Wide ResNet, ignored by ConvNeXt)
@@ -851,6 +961,12 @@ def create_model(
         model = resnet50_cifar(num_classes=num_classes, dropout_rate=dropout_rate)
     elif model_type == "wide_resnet28_10":
         model = wide_resnet28_10(
+            num_classes=num_classes,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
+    elif model_type == "wide_resnet28_10_selfdistill":
+        model = wide_resnet28_10_selfdistill(
             num_classes=num_classes,
             dropout_rate=dropout_rate,
             drop_path_rate=drop_path_rate,
@@ -881,7 +997,8 @@ def create_model(
         raise ValueError(
             f"Unknown model_type: {model_type}. "
             f"Available options: 'resnet34', 'resnet50', "
-            f"'wide_resnet28_10', 'wide_resnet40_10', 'wide_resnet28_12', "
+            f"'wide_resnet28_10', 'wide_resnet28_10_selfdistill', "
+            f"'wide_resnet40_10', 'wide_resnet28_12', "
             f"'convnext_tiny', 'convnext_small'"
         )
 

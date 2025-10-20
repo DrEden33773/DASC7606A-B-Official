@@ -162,6 +162,7 @@ def parse_args():
             "resnet34",
             "resnet50",
             "wide_resnet28_10",
+            "wide_resnet28_10_selfdistill",
             "wide_resnet40_10",
             "wide_resnet28_12",
             "convnext_tiny",
@@ -170,8 +171,8 @@ def parse_args():
         default="wide_resnet28_10",
         help="Model architecture (all from scratch). "
         "Phase 1: wide_resnet28_10 (36.5M, F1=0.8131). "
-        "Phase 2: convnext_tiny (28M, target F1≥0.83). "
-        "Others: resnet34/50 (baselines), wide_resnet40_10/28_12, convnext_small.",
+        "Phase 2.5: wide_resnet28_10_selfdistill (39M, target F1≥0.85, BYOT). "
+        "Others: resnet34/50, wide_resnet40_10/28_12, convnext_tiny/small.",
     )
     parser.add_argument(
         "--dropout",
@@ -277,6 +278,29 @@ def parse_args():
         type=float,
         default=1.0,
         help="Maximum gradient norm for gradient clipping. 0 = no clipping. Recommended: 1.0",
+    )
+
+    # Self-Distillation (BYOT)
+    parser.add_argument(
+        "--use_self_distillation",
+        action="store_true",
+        default=False,
+        help="Use self-distillation (Be Your Own Teacher). "
+        "Only works with wide_resnet28_10_selfdistill model. "
+        "Expected improvement: +3-4%% F1 (paper: arXiv:1905.08094).",
+    )
+    parser.add_argument(
+        "--distill_temperature",
+        type=float,
+        default=4.0,
+        help="Temperature for self-distillation (default: 4.0, range: 3-6)",
+    )
+    parser.add_argument(
+        "--distill_alpha",
+        type=float,
+        default=0.9,
+        help="Weight for soft labels in self-distillation (default: 0.9). "
+        "loss = alpha * KL + (1-alpha) * CE",
     )
 
     # EMA (Exponential Moving Average)
@@ -623,6 +647,9 @@ def train(args, model: nn.Module):
             mixup_alpha=args.mixup_alpha,
             cutmix_alpha=args.cutmix_alpha,
             use_cutmix=args.use_cutmix,
+            use_self_distill=args.use_self_distillation,
+            distill_temperature=args.distill_temperature,
+            distill_alpha=args.distill_alpha,
         )
 
         # Validate the model (use EMA weights if enabled)
