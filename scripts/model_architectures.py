@@ -650,26 +650,26 @@ class PyramidBasicBlock(nn.Module):
         self.out_channels = out_channels
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pre-activation
-        out = F.relu(self.bn1(x))
+        # Shortcut path (before pre-activation!)
+        shortcut = x
 
-        # Shortcut (zero-padded identity or downsampling)
+        # Downsampling if needed
         if self.stride != 1:
-            shortcut = F.avg_pool2d(out, kernel_size=2, stride=2)
-        else:
-            shortcut = out
+            shortcut = F.avg_pool2d(shortcut, kernel_size=2, stride=2)
 
-        # Zero-pad channels if dimension increases
+        # Zero-pad channels if dimension increases (PyramidNet key technique)
         if self.in_channels != self.out_channels:
             pad_channels = self.out_channels - self.in_channels
+            # Pad on channel dimension: [N, C, H, W] -> [N, C+pad, H, W]
             shortcut = F.pad(
                 shortcut,
-                (0, 0, 0, 0, 0, pad_channels),  # Pad along channel dimension
+                (0, 0, 0, 0, 0, pad_channels),
                 mode="constant",
                 value=0,
             )
 
-        # Main path
+        # Main path with pre-activation
+        out = F.relu(self.bn1(x))
         out = self.conv1(out)
         out = F.relu(self.bn2(out))
         out = self.conv2(out)
@@ -736,11 +736,10 @@ class PyramidNet(nn.Module):
             for i in range(total_blocks)
         ]
 
-        # Initial convolution
+        # Initial convolution (no BN here, PyramidBasicBlock has pre-activation)
         self.conv1 = nn.Conv2d(
             3, start_channels, kernel_size=3, stride=1, padding=1, bias=False
         )
-        self.bn1 = nn.BatchNorm2d(start_channels)
 
         # Build three groups
         block_idx = 0
@@ -816,13 +815,15 @@ class PyramidNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Initial conv (no activation, pre-activation is in blocks)
         x = self.conv1(x)
-        x = self.bn1(x)
 
+        # Three pyramid layers
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
 
+        # Final activation and pooling
         x = F.relu(self.bn_final(x))
         x = F.adaptive_avg_pool2d(x, (1, 1))
         x = x.view(x.size(0), -1)
