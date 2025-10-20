@@ -608,6 +608,265 @@ def convnext_small(
 
 
 # ============================================================================
+# PyramidNet - Deep Pyramidal Residual Networks (Phase 2.7)
+# ============================================================================
+
+
+class PyramidBasicBlock(nn.Module):
+    """
+    PyramidNet basic block with pre-activation and zero-padded shortcuts.
+
+    Reference:
+        Han et al. "Deep Pyramidal Residual Networks" (CVPR 2017)
+        https://arxiv.org/abs/1610.02915
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        stride: int,
+        drop_path_rate: float = 0.0,
+    ) -> None:
+        super().__init__()
+
+        self.bn1 = nn.BatchNorm2d(in_channels)
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
+        )
+
+        self.drop_path = DropPath(drop_path_rate)
+        self.stride = stride
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Pre-activation
+        out = F.relu(self.bn1(x))
+
+        # Shortcut (zero-padded identity or downsampling)
+        if self.stride != 1:
+            shortcut = F.avg_pool2d(out, kernel_size=2, stride=2)
+        else:
+            shortcut = out
+
+        # Zero-pad channels if dimension increases
+        if self.in_channels != self.out_channels:
+            pad_channels = self.out_channels - self.in_channels
+            shortcut = F.pad(
+                shortcut,
+                (0, 0, 0, 0, 0, pad_channels),  # Pad along channel dimension
+                mode="constant",
+                value=0,
+            )
+
+        # Main path
+        out = self.conv1(out)
+        out = F.relu(self.bn2(out))
+        out = self.conv2(out)
+
+        # Drop path
+        out = self.drop_path(out)
+
+        # Add shortcut
+        out = out + shortcut
+
+        return out
+
+
+class PyramidNet(nn.Module):
+    """
+    PyramidNet for CIFAR datasets.
+
+    Gradually increases channel dimensions across all blocks instead of
+    sudden jumps at downsampling points, improving feature diversity.
+
+    Args:
+        depth: Network depth (e.g., 110, 164, 272)
+        alpha: Widening factor controlling final channel dimension
+        num_classes: Number of output classes
+        drop_path_rate: Stochastic depth rate
+    """
+
+    def __init__(
+        self,
+        depth: int,
+        alpha: int,
+        num_classes: int = 100,
+        drop_path_rate: float = 0.0,
+    ) -> None:
+        super().__init__()
+
+        # Calculate blocks per group
+        # PyramidNet depth = 2 + 6n (for bottleneck: 2 + 9n)
+        # For BasicBlock: n = (depth - 2) / 6
+        assert (depth - 2) % 6 == 0, f"Depth must satisfy (depth-2)%6==0, got {depth}"
+        n = (depth - 2) // 6
+
+        # Initial channels
+        start_channels = 16
+
+        # Calculate channel increments for each block
+        # Total blocks: 3n (3 groups × n blocks)
+        total_blocks = 3 * n
+        add_channels = alpha / total_blocks  # Increment per block
+
+        # Build channel list for each block
+        in_channels_list = []
+        out_channels_list = []
+
+        current_channels = start_channels
+        for i in range(total_blocks):
+            in_channels_list.append(int(round(current_channels)))
+            current_channels += add_channels
+            out_channels_list.append(int(round(current_channels)))
+
+        # Calculate stochastic depth rates (linear increase)
+        dp_rates = [
+            i * drop_path_rate / (total_blocks - 1) if total_blocks > 1 else 0.0
+            for i in range(total_blocks)
+        ]
+
+        # Initial convolution
+        self.conv1 = nn.Conv2d(
+            3, start_channels, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(start_channels)
+
+        # Build three groups
+        block_idx = 0
+        self.layer1 = self._make_layer(
+            n,
+            in_channels_list[block_idx : block_idx + n],
+            out_channels_list[block_idx : block_idx + n],
+            dp_rates[block_idx : block_idx + n],
+            stride=1,
+        )
+        block_idx += n
+
+        self.layer2 = self._make_layer(
+            n,
+            in_channels_list[block_idx : block_idx + n],
+            out_channels_list[block_idx : block_idx + n],
+            dp_rates[block_idx : block_idx + n],
+            stride=2,
+        )
+        block_idx += n
+
+        self.layer3 = self._make_layer(
+            n,
+            in_channels_list[block_idx : block_idx + n],
+            out_channels_list[block_idx : block_idx + n],
+            dp_rates[block_idx : block_idx + n],
+            stride=2,
+        )
+
+        # Final BN and FC
+        final_channels = out_channels_list[-1]
+        self.bn_final = nn.BatchNorm2d(final_channels)
+        self.fc = nn.Linear(final_channels, num_classes)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _make_layer(
+        self,
+        num_blocks: int,
+        in_channels_list: List[int],
+        out_channels_list: List[int],
+        dp_rates: List[float],
+        stride: int,
+    ) -> nn.Sequential:
+        """Create a layer with gradually increasing channels."""
+        layers: List[nn.Module] = []
+
+        for i in range(num_blocks):
+            # First block of group has stride, others have stride=1
+            block_stride = stride if i == 0 else 1
+
+            layers.append(
+                PyramidBasicBlock(
+                    in_channels=in_channels_list[i],
+                    out_channels=out_channels_list[i],
+                    stride=block_stride,
+                    drop_path_rate=dp_rates[i],
+                )
+            )
+
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(x)
+        x = self.bn1(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+
+        x = F.relu(self.bn_final(x))
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+
+        return x
+
+
+def pyramidnet110_270(
+    num_classes: int = 100,
+    drop_path_rate: float = 0.1,
+) -> PyramidNet:
+    """
+    PyramidNet-110 with alpha=270 for CIFAR.
+
+    Paper result: CIFAR-100 ~83% accuracy (~F1 0.83)
+    Target with SD+RA: F1 ≥ 0.85
+
+    Architecture:
+    - Depth: 110 layers
+    - Alpha: 270 (widening factor)
+    - Parameters: ~26M
+    - Final channels: 16 + 270 = 286
+    """
+    return PyramidNet(
+        depth=110, alpha=270, num_classes=num_classes, drop_path_rate=drop_path_rate
+    )
+
+
+def pyramidnet164_270(
+    num_classes: int = 100,
+    drop_path_rate: float = 0.15,
+) -> PyramidNet:
+    """
+    PyramidNet-164 with alpha=270 for CIFAR (deeper variant).
+
+    Phase 3 option if PyramidNet-110 is successful.
+    """
+    return PyramidNet(
+        depth=164, alpha=270, num_classes=num_classes, drop_path_rate=drop_path_rate
+    )
+
+
+# ============================================================================
 # Wide ResNet - Optimized for CIFAR-100 from scratch training (Phase 1)
 # ============================================================================
 
@@ -913,6 +1172,8 @@ def create_model(
         "wide_resnet28_10_selfdistill",
         "wide_resnet40_10",
         "wide_resnet28_12",
+        "pyramidnet110_270",
+        "pyramidnet164_270",
         "convnext_tiny",
         "convnext_small",
     ] = "wide_resnet28_10",
@@ -931,8 +1192,12 @@ def create_model(
             Phase 1 (proven):
             - "wide_resnet28_10": WRN-28-10 (36.5M params, F1=0.8131) ← Phase 1 best
 
-            Phase 2.5 (self-distillation, target F1≥0.85):
-            - "wide_resnet28_10_selfdistill": WRN-28-10 + BYOT (39M params) ← Recommended
+            Phase 2.7 (PyramidNet, target F1≥0.85):
+            - "pyramidnet110_270": PyramidNet-110 (26M params, paper: 83% acc) ← Recommended
+            - "pyramidnet164_270": PyramidNet-164 (26M params) ← Deeper variant
+
+            Phase 2.5 (self-distillation):
+            - "wide_resnet28_10_selfdistill": WRN-28-10 + BYOT (39M params, F1=0.7968)
 
             Others:
             - "wide_resnet40_10": WRN-40-10 (55.8M params)
@@ -983,6 +1248,16 @@ def create_model(
             dropout_rate=dropout_rate,
             drop_path_rate=drop_path_rate,
         )
+    elif model_type == "pyramidnet110_270":
+        model = pyramidnet110_270(
+            num_classes=num_classes,
+            drop_path_rate=drop_path_rate,
+        )
+    elif model_type == "pyramidnet164_270":
+        model = pyramidnet164_270(
+            num_classes=num_classes,
+            drop_path_rate=drop_path_rate,
+        )
     elif model_type == "convnext_tiny":
         model = convnext_tiny(
             num_classes=num_classes,
@@ -999,6 +1274,7 @@ def create_model(
             f"Available options: 'resnet34', 'resnet50', "
             f"'wide_resnet28_10', 'wide_resnet28_10_selfdistill', "
             f"'wide_resnet40_10', 'wide_resnet28_12', "
+            f"'pyramidnet110_270', 'pyramidnet164_270', "
             f"'convnext_tiny', 'convnext_small'"
         )
 
