@@ -292,15 +292,16 @@ def parse_args():
     parser.add_argument(
         "--distill_temperature",
         type=float,
-        default=4.0,
-        help="Temperature for self-distillation (default: 4.0, range: 3-6)",
+        default=3.0,
+        help="Temperature for self-distillation (default: 3.0, lowered for stability). "
+        "Range: 2-4. Higher = softer targets.",
     )
     parser.add_argument(
         "--distill_alpha",
         type=float,
-        default=0.9,
-        help="Weight for soft labels in self-distillation (default: 0.9). "
-        "loss = alpha * KL + (1-alpha) * CE",
+        default=0.7,
+        help="Weight for soft labels in self-distillation (default: 0.7, lowered for stability). "
+        "loss = alpha * KL + (1-alpha) * CE. Range: 0.5-0.9.",
     )
 
     # EMA (Exponential Moving Average)

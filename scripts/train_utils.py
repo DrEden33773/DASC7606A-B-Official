@@ -356,22 +356,22 @@ def mixup_criterion(
 def self_distillation_loss(
     all_logits: list[torch.Tensor],
     labels: torch.Tensor,
-    temperature: float = 4.0,
-    alpha: float = 0.9,
+    temperature: float = 3.0,
+    alpha: float = 0.7,
 ) -> torch.Tensor:
     """
-    Self-distillation loss (Be Your Own Teacher).
+    Self-distillation loss (Be Your Own Teacher) - Fixed version.
 
-    Combines three types of losses:
-    1. Cross-entropy loss for all classifiers (hard labels)
+    Combines two types of losses:
+    1. Cross-entropy loss for final classifier only (hard labels)
     2. KL divergence loss (shallow classifiers learn from deep classifier)
 
     Args:
         all_logits: List of logits from all classifiers [logits1, logits2, logits3, logits4]
                     where logits4 is the deepest (teacher)
         labels: True labels [batch_size]
-        temperature: Temperature for knowledge distillation (default: 4.0)
-        alpha: Weight for soft labels (default: 0.9)
+        temperature: Temperature for knowledge distillation (default: 3.0, lowered from 4.0)
+        alpha: Weight for soft labels (default: 0.7, lowered from 0.9 for stability)
                loss = alpha * KL + (1-alpha) * CE
 
     Returns:
@@ -380,31 +380,40 @@ def self_distillation_loss(
     Reference:
         Zhang et al. "Be Your Own Teacher" (2019)
         https://arxiv.org/abs/1905.08094
+
+    Note:
+        Modified from paper to avoid NaN:
+        - Only final classifier uses CE loss (not all 4)
+        - Lower temperature (3.0 vs 4.0) for stability
+        - Lower alpha (0.7 vs 0.9) to balance hard/soft labels
     """
     num_classifiers = len(all_logits)
     teacher_logits = all_logits[-1]  # Deepest classifier as teacher
 
-    total_loss: torch.Tensor = torch.tensor(0.0, device=all_logits[0].device)
-
-    # Loss 1: Cross-entropy with hard labels (all classifiers)
-    for logits in all_logits:
-        ce_loss = F.cross_entropy(logits, labels)
-        total_loss = total_loss + (1 - alpha) * ce_loss
+    # Loss 1: Cross-entropy with hard labels (ONLY final classifier to avoid 4x amplification)
+    ce_loss = F.cross_entropy(teacher_logits, labels)
+    total_loss = (1 - alpha) * ce_loss
 
     # Loss 2: KL divergence (shallow learn from deep)
+    kl_total = 0.0
     for i in range(num_classifiers - 1):  # Exclude teacher itself
         student_logits = all_logits[i]
 
-        # Soft targets from teacher
-        soft_student = F.log_softmax(student_logits / temperature, dim=1)
-        soft_teacher = F.softmax(teacher_logits / temperature, dim=1)
+        # Soft targets from teacher (with detach to avoid gradient issues)
+        with torch.no_grad():
+            soft_teacher = F.softmax(teacher_logits / temperature, dim=1)
 
-        # KL divergence
+        soft_student = F.log_softmax(student_logits / temperature, dim=1)
+
+        # KL divergence with numerical stability
         kl_loss = F.kl_div(soft_student, soft_teacher, reduction="batchmean") * (
             temperature**2
         )
 
-        total_loss = total_loss + alpha * kl_loss
+        kl_total += kl_loss
+
+    # Average KL loss across student classifiers (3 classifiers)
+    total_loss = total_loss + (alpha / (num_classifiers - 1)) * kl_total
 
     return total_loss
 
