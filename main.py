@@ -170,7 +170,7 @@ def parse_args():
             "convnext_tiny",
             "convnext_small",
         ],
-        default="wide_resnet28_10",
+        default="pyramidnet110_270",
         help="Model architecture (all from scratch). "
         "Phase 1: wide_resnet28_10 (36.5M, F1=0.8131). "
         "Phase 2.7: pyramidnet110_270 (26M, paper: 83%%, target F1≥0.85). "
@@ -210,11 +210,11 @@ def parse_args():
         "--batch_size", type=int, default=128, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_epochs", type=int, default=300, help="Number of training epochs"
+        "--num_epochs", type=int, default=600, help="Number of training epochs"
     )
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument(
-        "--weight_decay", type=float, default=1e-3, help="Weight decay (L2 penalty)"
+        "--weight_decay", type=float, default=1e-4, help="Weight decay (L2 penalty)"
     )
 
     # Optimizer and scheduler
@@ -341,7 +341,7 @@ def parse_args():
     parser.add_argument(
         "--early_stopping_patience",
         type=int,
-        default=30,  # 35 or 30 does not matter (in most cases)
+        default=60,
         help="Early stopping patience. Increased to 20 to allow more training before stopping",
     )
 
