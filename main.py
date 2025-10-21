@@ -364,6 +364,22 @@ def parse_args():
         "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
 
+    # Ensemble training
+    parser.add_argument(
+        "--ensemble_seeds",
+        type=str,
+        default=None,
+        help="Comma-separated seeds for ensemble training (e.g., '42,43,44'). "
+        "If specified, trains multiple models sequentially and ensembles them at evaluation. "
+        "Example: --ensemble_seeds 42,43,44 trains 3 models and ensembles their predictions.",
+    )
+    parser.add_argument(
+        "--ensemble_dir",
+        type=str,
+        default="results/ensemble",
+        help="Directory to save ensemble models (default: results/ensemble)",
+    )
+
     return parser.parse_args()
 
 
@@ -846,6 +862,17 @@ def main():
     # Parse arguments
     args = parse_args()
 
+    # Check if ensemble training is requested
+    if args.ensemble_seeds is not None:
+        # Ensemble mode: train multiple models with different seeds
+        ensemble_main(args)
+    else:
+        # Standard mode: single model training
+        standard_main(args)
+
+
+def standard_main(args):
+    """Standard single-model training pipeline"""
     # Set random seeds
     set_random_seeds(args.seed)
 
@@ -874,6 +901,71 @@ def main():
     train(args, model)
     # Evaluate
     evaluate(args, model)
+
+
+def ensemble_main(args):
+    """Ensemble training pipeline - trains multiple models and creates ensemble"""
+    import os
+
+    from scripts.model_architectures import EnsembleModel
+
+    # Parse ensemble seeds
+    seeds = [int(s.strip()) for s in args.ensemble_seeds.split(",")]
+
+    logger.info("=" * 80)
+    logger.info(f"ENSEMBLE MODE: Training {len(seeds)} models with seeds {seeds}")
+    logger.info(f"Models will be saved to: {args.ensemble_dir}")
+    logger.info("=" * 80)
+
+    # Collect data once
+    collect_data(args)
+
+    # Train each model and collect them
+    trained_model_list = []
+    for i, seed in enumerate(seeds):
+        logger.info(f"\n{'=' * 80}")
+        logger.info(f"Training model {i + 1}/{len(seeds)} with seed={seed}")
+        logger.info(f"{'=' * 80}\n")
+
+        # Update seed
+        args.seed = seed
+        set_random_seeds(seed)
+
+        # Create model-specific output directory
+        model_output_dir = os.path.join(args.ensemble_dir, f"model_seed{seed}")
+        os.makedirs(model_output_dir, exist_ok=True)
+
+        # Temporarily change output_dir
+        original_output_dir = args.output_dir
+        args.output_dir = model_output_dir
+
+        # Build and train model
+        model = build_model(args)
+        train(args, model)
+
+        # Keep the trained model (already loaded with best weights from train())
+        trained_model_list.append(model)
+
+        # Restore original output_dir
+        args.output_dir = original_output_dir
+
+    # Create ensemble model combining all trained models
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"CREATING ENSEMBLE MODEL: Combining {len(trained_model_list)} models")
+    logger.info(f"{'=' * 80}\n")
+
+    ensemble_model = EnsembleModel(trained_model_list)
+
+    # Log ensemble parameters
+    total_params = sum(p.numel() for p in ensemble_model.parameters())
+    logger.info(f"Ensemble model parameters: {total_params / 1e6:.2f}M total")
+    logger.info(
+        f"  (= {len(trained_model_list)} models × {total_params / len(trained_model_list) / 1e6:.2f}M each)"
+    )
+
+    # Use original evaluate() function on the ensemble model
+    logger.info("\nEvaluating ensemble model using standard pipeline...")
+    evaluate(args, ensemble_model)
 
 
 if __name__ == "__main__":

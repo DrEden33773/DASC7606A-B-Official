@@ -1163,6 +1163,63 @@ def wide_resnet28_12(
     return WideResNet(28, 12, num_classes, dropout_rate, drop_path_rate)
 
 
+# ============================================================================
+# Ensemble Model - Combines multiple models for ensemble prediction
+# ============================================================================
+
+
+class EnsembleModel(nn.Module):
+    """
+    Ensemble model that combines multiple trained models via soft voting.
+
+    Acts as a single model but internally runs multiple models and averages predictions.
+    Compatible with standard evaluate() function.
+    """
+
+    def __init__(self, models: List[nn.Module]) -> None:
+        """
+        Initialize ensemble model.
+
+        Args:
+            models: List of trained models (should all have same architecture)
+        """
+        super().__init__()
+        self.models = nn.ModuleList(models)
+        self.num_models = len(models)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through ensemble (soft voting).
+
+        Args:
+            x: Input tensor [batch_size, C, H, W]
+
+        Returns:
+            Averaged logits [batch_size, num_classes]
+        """
+        # Get predictions from all models
+        outputs = []
+        for model in self.models:
+            out = model(x)
+            outputs.append(out)
+
+        # Average logits (soft voting)
+        ensemble_output = torch.stack(outputs).mean(dim=0)
+
+        return ensemble_output
+
+    def train(self, mode: bool = True):
+        """Set ensemble to train/eval mode."""
+        super().train(mode)
+        for model in self.models:
+            model.train(mode)
+        return self
+
+    def eval(self):
+        """Set ensemble to eval mode."""
+        return self.train(False)
+
+
 def create_model(
     num_classes: int,
     device: str,
