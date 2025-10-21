@@ -923,7 +923,7 @@ def ensemble_main(args):
     # Train each model and collect them
     trained_model_list = []
     for i, seed in enumerate(seeds):
-        logger.info(f"\n{'=' * 80}")
+        logger.info(f"{'=' * 80}")
         logger.info(f"Training model {i + 1}/{len(seeds)} with seed={seed}")
         logger.info(f"{'=' * 80}\n")
 
