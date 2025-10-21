@@ -950,9 +950,9 @@ def ensemble_main(args):
         args.output_dir = original_output_dir
 
     # Create ensemble model combining all trained models
-    logger.info(f"\n{'=' * 80}")
+    logger.info(f"{'=' * 80}")
     logger.info(f"CREATING ENSEMBLE MODEL: Combining {len(trained_model_list)} models")
-    logger.info(f"{'=' * 80}\n")
+    logger.info(f"{'=' * 80}")
 
     ensemble_model = EnsembleModel(trained_model_list)
 
@@ -964,7 +964,7 @@ def ensemble_main(args):
     )
 
     # Use original evaluate() function on the ensemble model
-    logger.info("\nEvaluating ensemble model using standard pipeline...")
+    logger.info("Evaluating ensemble model using standard pipeline...")
     evaluate(args, ensemble_model)
 
 
