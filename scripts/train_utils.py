@@ -27,7 +27,7 @@ class_names_2_idx: dict[str, int] = {}
 # Group 1: Detail-sensitive classes (Human + Small Animals)
 # These classes suffered severe performance drop (-0.14 avg) with CutMix
 # Strategy: Use Mixup ONLY (alpha=0.4) to preserve fine-grained features
-detail_sensitive_classes = {
+detail_sensitive_classes: set[int] = set(
     # Human classes (face/clothing details crucial)
     # baby
     # boy
@@ -40,12 +40,12 @@ detail_sensitive_classes = {
     # otter
     # possum
     # shrew
-}
+)
 
 # Group 2: Local-feature classes (Mechanical + Plants)
 # These classes showed excellent performance (0.90+) with CutMix
 # Strategy: Prefer CutMix (80% CutMix, 20% Mixup) to enhance local features
-local_feature_classes = {
+local_feature_classes: set[int] = set(
     # Mechanical (local features like wheels, body parts)
     # bicycle
     # bus
@@ -63,7 +63,7 @@ local_feature_classes = {
     # sunflower
     # tulip
     # willow_tree
-}
+)
 
 # Group 3: Mixed-strategy classes (All others)
 # Default strategy: 30% Mixup, 70% CutMix (balanced approach)
