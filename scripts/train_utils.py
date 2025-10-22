@@ -885,10 +885,10 @@ def load_data(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,  # 8, Increased from 4 to feed GPU faster (online aug is CPU-heavy)
+        num_workers=4,
         pin_memory=True,
         persistent_workers=True,  # Keep workers alive between epochs
-        prefetch_factor=2,  # 4, Increased from 2 to prefetch more batches
+        prefetch_factor=2,
     )
     # Validation has less CPU overhead (no augmentation, no backward pass)
     # Moderate increase in workers is sufficient
@@ -896,10 +896,10 @@ def load_data(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,  # 6, Increased from 4 (validation needs fewer workers)
+        num_workers=4,
         pin_memory=True,
         persistent_workers=True,
-        prefetch_factor=2,  # 3, Increased from 2
+        prefetch_factor=2,
     )
 
     # Print dataset summary
