@@ -961,6 +961,150 @@ def load_data(
     return train_loader, val_loader
 
 
+def load_data_class_based(
+    data_dir: str,
+    batch_size: int,
+    dataset_type: Literal["cifar10", "cifar100"] = "cifar100",
+    manual_seed: int = 42,
+    use_online_aug: bool = True,
+    augmentation_strength: Literal[
+        "light", "medium", "strong", "randaugment"
+    ] = "light",
+    use_cutmix: bool = False,
+    randaugment_n: int = 2,
+    randaugment_m: int = 9,
+):
+    """
+    Load data with class-based splitting for differential augmentation.
+
+    Creates two separate DataLoaders:
+    1. detail_sensitive_loader: For human/small animal classes (no Mixup/CutMix)
+    2. normal_loader: For other classes (with Mixup/CutMix)
+
+    This allows preserving fine-grained details for classes that suffer from mixing.
+
+    Returns:
+        detail_sensitive_loader: DataLoader for detail-sensitive classes
+        normal_loader: DataLoader for other classes
+        val_loader: Validation DataLoader (standard, no split)
+    """
+    from torch.utils.data import Subset
+
+    # First load standard data to get class indices
+    train_transforms = get_train_transforms(
+        dataset_type=dataset_type,
+        augmentation_strength=augmentation_strength,
+        use_cutmix=use_cutmix,
+        randaugment_n=randaugment_n,
+        randaugment_m=randaugment_m,
+    )
+    val_transforms = load_transforms(dataset_type=dataset_type)
+
+    # Load full dataset
+    train_dataset = datasets.ImageFolder(root=data_dir, transform=train_transforms)
+
+    # Get class names to indices mapping
+    global class_names_2_idx
+    if not class_names_2_idx:
+        class_names_2_idx = {
+            name: idx for idx, name in enumerate(train_dataset.classes)
+        }
+
+    # Build detail_sensitive_classes and local_feature_classes
+    global detail_sensitive_classes, local_feature_classes
+    detail_sensitive_classes = {
+        class_names_2_idx["baby"],
+        class_names_2_idx["boy"],
+        class_names_2_idx["girl"],
+        class_names_2_idx["man"],
+        class_names_2_idx["woman"],
+        class_names_2_idx["beaver"],
+        class_names_2_idx["mouse"],
+        class_names_2_idx["otter"],
+        class_names_2_idx["possum"],
+        class_names_2_idx["shrew"],
+    }
+
+    local_feature_classes = {
+        class_names_2_idx["bicycle"],
+        class_names_2_idx["bus"],
+        class_names_2_idx["motorcycle"],
+        class_names_2_idx["pickup_truck"],
+        class_names_2_idx["tank"],
+        class_names_2_idx["tractor"],
+        class_names_2_idx["train"],
+        class_names_2_idx["maple_tree"],
+        class_names_2_idx["oak_tree"],
+        class_names_2_idx["orchid"],
+        class_names_2_idx["palm_tree"],
+        class_names_2_idx["pine_tree"],
+        class_names_2_idx["sunflower"],
+        class_names_2_idx["tulip"],
+        class_names_2_idx["willow_tree"],
+    }
+
+    # Split dataset indices by class type
+    detail_indices = []
+    normal_indices = []
+
+    for idx in range(len(train_dataset)):
+        _, label = train_dataset.imgs[idx]  # Get label from ImageFolder
+        if label in detail_sensitive_classes:
+            detail_indices.append(idx)
+        else:
+            normal_indices.append(idx)
+
+    # Create subsets
+    detail_subset = Subset(train_dataset, detail_indices)
+    normal_subset = Subset(train_dataset, normal_indices)
+
+    print("Dataset split by class sensitivity:")
+    print(
+        f"  Detail-sensitive classes (no Mixup/CutMix): {len(detail_indices)} samples"
+    )
+    print(f"  Normal classes (with Mixup/CutMix): {len(normal_indices)} samples")
+
+    # Create DataLoaders
+    detail_loader = DataLoader(
+        detail_subset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
+
+    normal_loader = DataLoader(
+        normal_subset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
+
+    # Validation loader (standard)
+    import os
+
+    base_dir = os.path.dirname(os.path.dirname(data_dir))
+    val_dir = os.path.join(base_dir, "raw", "val")
+    val_dataset = datasets.ImageFolder(root=val_dir, transform=val_transforms)
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
+
+    return detail_loader, normal_loader, val_loader
+
+
 class LabelSmoothingCrossEntropy(nn.Module):
     """
     Cross-entropy loss with label smoothing.
@@ -1474,6 +1618,175 @@ def train_epoch(
 
     epoch_loss = running_loss / total
     epoch_acc = 100.0 * correct / total
+
+    return epoch_loss, epoch_acc
+
+
+def train_epoch_class_based(
+    model: nn.Module,
+    detail_loader: DataLoader,
+    normal_loader: DataLoader,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer,
+    device: str,
+    scheduler: Optional[optim.lr_scheduler.LRScheduler] = None,
+    use_amp: bool = False,
+    max_grad_norm: Optional[float] = None,
+    ema: Optional[ModelEMA] = None,
+    mixup_alpha: float = 0.0,
+    cutmix_alpha: float = 0.0,
+    use_cutmix: bool = False,
+) -> Tuple[float, float]:
+    """
+    Train for one epoch using class-based DataLoaders.
+
+    detail_loader: NO Mixup/CutMix (preserve fine-grained details)
+    normal_loader: WITH Mixup/CutMix (normal augmentation)
+
+    Args:
+        detail_loader: DataLoader for detail-sensitive classes
+        normal_loader: DataLoader for other classes
+        Other args: Same as train_epoch()
+
+    Returns:
+        Tuple of (average loss, accuracy percentage) for the epoch
+    """
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    # Initialize GradScaler
+    scaler = torch.amp.grad_scaler.GradScaler(device=DEVICE_TYPE) if use_amp else None
+
+    # Create iterators
+    detail_iter = iter(detail_loader)
+    normal_iter = iter(normal_loader)
+
+    # Calculate total steps (sum of both loaders)
+    total_steps = len(detail_loader) + len(normal_loader)
+    progress_bar = tqdm(range(total_steps), desc="Training (Class-Based)", leave=False)
+
+    for step in progress_bar:
+        # Alternate between loaders or exhaust both
+        try:
+            # Try detail loader first (no mixing)
+            if step % 2 == 0 and len(detail_loader) > 0:
+                try:
+                    inputs, labels = next(detail_iter)
+                    use_mixing = False  # NO Mixup/CutMix for detail classes
+                except StopIteration:
+                    # Detail loader exhausted, use normal
+                    inputs, labels = next(normal_iter)
+                    use_mixing = True
+            else:
+                # Normal loader (with mixing)
+                try:
+                    inputs, labels = next(normal_iter)
+                    use_mixing = True  # Use Mixup/CutMix
+                except StopIteration:
+                    # Normal loader exhausted, use detail
+                    inputs, labels = next(detail_iter)
+                    use_mixing = False
+        except StopIteration:
+            # Both exhausted
+            break
+
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        # Apply Mixup/CutMix only for normal classes
+        if use_mixing and ((use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0):
+            if use_cutmix and cutmix_alpha > 0 and mixup_alpha > 0:
+                # Both enabled, randomly choose
+                if np.random.rand() < 0.3:
+                    inputs, targets_a, targets_b, lam = mixup_data(
+                        inputs, labels, alpha=mixup_alpha, device=device
+                    )
+                else:
+                    inputs, targets_a, targets_b, lam = cutmix_data(
+                        inputs, labels, alpha=cutmix_alpha, device=device
+                    )
+            elif use_cutmix and cutmix_alpha > 0:
+                inputs, targets_a, targets_b, lam = cutmix_data(
+                    inputs, labels, alpha=cutmix_alpha, device=device
+                )
+            elif mixup_alpha > 0:
+                inputs, targets_a, targets_b, lam = mixup_data(
+                    inputs, labels, alpha=mixup_alpha, device=device
+                )
+            else:
+                targets_a, targets_b, lam = labels, labels, 1.0
+        else:
+            # No mixing for detail classes
+            targets_a, targets_b, lam = labels, labels, 1.0
+
+        # Standard training step
+        optimizer.zero_grad()
+
+        if use_amp:
+            with torch.amp.autocast_mode.autocast(device_type=DEVICE_TYPE):
+                outputs = model(inputs)
+                if lam < 1.0:
+                    loss = mixup_criterion(
+                        criterion, outputs, targets_a, targets_b, lam
+                    )
+                else:
+                    loss = criterion(outputs, labels)
+        else:
+            outputs = model(inputs)
+            if lam < 1.0:
+                loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+            else:
+                loss = criterion(outputs, labels)
+
+        # Backward
+        if use_amp and scaler:
+            scaler.scale(loss).backward()
+            if max_grad_norm is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            optimizer.step()
+
+        # Update scheduler
+        if scheduler is not None and isinstance(
+            scheduler, optim.lr_scheduler.OneCycleLR
+        ):
+            scheduler.step()
+
+        # Update EMA
+        if ema is not None:
+            ema.update(model)
+
+        # Statistics
+        running_loss += loss.item() * inputs.size(0)
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+
+        if lam < 1.0:
+            correct += (
+                lam * predicted.eq(targets_a).sum().item()
+                + (1 - lam) * predicted.eq(targets_b).sum().item()
+            )
+        else:
+            correct += predicted.eq(labels).sum().item()
+
+        # Update progress
+        progress_bar.set_postfix(
+            {
+                "Loss": f"{loss.item():.4f}",
+                "Acc": f"{100.0 * correct / total:.2f}%",
+                "Mode": "Detail" if not use_mixing else "Normal",
+            }
+        )
+
+    epoch_loss = running_loss / total if total > 0 else 0
+    epoch_acc = 100.0 * correct / total if total > 0 else 0
 
     return epoch_loss, epoch_acc
 

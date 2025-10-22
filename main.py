@@ -33,6 +33,7 @@ from scripts.train_utils import (
     save_checkpoint,
     save_metrics,
     train_epoch,
+    train_epoch_class_based,
     validate_epoch,
 )
 
@@ -364,6 +365,17 @@ def parse_args():
         "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
 
+    # Class-based DataLoader (Experimental)
+    parser.add_argument(
+        "--use_class_based_loader",
+        action="store_true",
+        default=False,
+        help="Use class-based data loaders for differential augmentation. "
+        "Detail-sensitive classes (human, small animals) will NOT use Mixup/CutMix "
+        "to preserve fine-grained features. Other classes use normal Mixup/CutMix. "
+        "Experimental feature to improve human class F1.",
+    )
+
     # Ensemble training
     parser.add_argument(
         "--ensemble_seeds",
@@ -553,12 +565,22 @@ def train(args, model: nn.Module):
         args.label_smoothing = 0.0
         if args.use_cutmix and args.cutmix_alpha > 0 and args.mixup_alpha > 0:
             logger.info("--label_smoothing disabled while using Mixup + CutMix")
-            logger.info("Using ADAPTIVE augmentation strategy (category-aware):")
-            logger.info(
-                "  • Detail-sensitive (human/small animals): Mixup only (alpha=0.4)"
-            )
-            logger.info("  • Local-feature (mechanical/plants): 80% CutMix, 20% Mixup")
-            logger.info("  • Mixed-strategy (others): 30% Mixup, 70% CutMix")
+
+            if args.use_class_based_loader:
+                logger.info("Using CLASS-BASED augmentation strategy:")
+                logger.info(
+                    "  • Detail-sensitive (human/small animals): NO Mixup/CutMix (preserve details)"
+                )
+                logger.info("  • Other classes: Mixup + CutMix as normal")
+            else:
+                logger.info("Using ADAPTIVE augmentation strategy (category-aware):")
+                logger.info(
+                    "  • Detail-sensitive (human/small animals): Mixup only (alpha=0.4)"
+                )
+                logger.info(
+                    "  • Local-feature (mechanical/plants): 80% CutMix, 20% Mixup"
+                )
+                logger.info("  • Mixed-strategy (others): 30% Mixup, 70% CutMix")
         elif args.use_cutmix and args.cutmix_alpha > 0:
             logger.info("--label_smoothing disabled while using CutMix")
         elif args.mixup_alpha > 0:
@@ -574,19 +596,42 @@ def train(args, model: nn.Module):
             f"Using OFFLINE augmentation (pre-generated, {args.aug_count}x augmentations per image)"
         )
 
-    # Load data first to get steps_per_epoch for OneCycleLR
-    train_loader, val_loader = load_data(
-        data_dir=data_dir,
-        batch_size=args.batch_size,
-        dataset_type=args.dataset,
-        manual_seed=args.seed,
-        use_online_aug=args.use_online_aug,
-        augmentation_strength=args.aug_strength,
-        use_cutmix=args.use_cutmix,
-        randaugment_n=args.randaugment_n,
-        randaugment_m=args.randaugment_m,
-    )
-    steps_per_epoch = len(train_loader)
+    # Load data - class-based or standard
+    if args.use_class_based_loader:
+        # Class-based loading for differential augmentation
+        from scripts.train_utils import load_data_class_based
+
+        detail_loader, normal_loader, val_loader = load_data_class_based(
+            data_dir=data_dir,
+            batch_size=args.batch_size,
+            dataset_type=args.dataset,
+            manual_seed=args.seed,
+            use_online_aug=args.use_online_aug,
+            augmentation_strength=args.aug_strength,
+            use_cutmix=args.use_cutmix,
+            randaugment_n=args.randaugment_n,
+            randaugment_m=args.randaugment_m,
+        )
+
+        # Use longer loader for steps_per_epoch calculation
+        steps_per_epoch = max(len(detail_loader), len(normal_loader))
+        train_loader = None  # Will use dual loaders
+    else:
+        # Standard loading
+        train_loader, val_loader = load_data(
+            data_dir=data_dir,
+            batch_size=args.batch_size,
+            dataset_type=args.dataset,
+            manual_seed=args.seed,
+            use_online_aug=args.use_online_aug,
+            augmentation_strength=args.aug_strength,
+            use_cutmix=args.use_cutmix,
+            randaugment_n=args.randaugment_n,
+            randaugment_m=args.randaugment_m,
+        )
+        steps_per_epoch = len(train_loader)
+        detail_loader = None
+        normal_loader = None
 
     # Get number of classes
     num_classes = 10 if args.dataset == "cifar10" else 100
@@ -652,24 +697,49 @@ def train(args, model: nn.Module):
 
     print("Starting training...")
     for epoch in range(args.num_epochs):
-        # Train for one epoch with new options
-        train_loss, train_acc = train_epoch(
-            model=model,
-            dataloader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            device=args.device,
-            scheduler=scheduler if args.scheduler == "onecycle" else None,
-            use_amp=args.use_amp,
-            max_grad_norm=args.max_grad_norm if args.max_grad_norm > 0 else None,
-            ema=ema,
-            mixup_alpha=args.mixup_alpha,
-            cutmix_alpha=args.cutmix_alpha,
-            use_cutmix=args.use_cutmix,
-            use_self_distill=args.use_self_distillation,
-            distill_temperature=args.distill_temperature,
-            distill_alpha=args.distill_alpha,
-        )
+        # Train for one epoch
+        if args.use_class_based_loader:
+            # Class-based training: use two loaders alternately
+            assert detail_loader is not None and normal_loader is not None, (
+                "detail_loader and normal_loader should not be None in class-based mode"
+            )
+            train_loss, train_acc = train_epoch_class_based(
+                model=model,
+                detail_loader=detail_loader,
+                normal_loader=normal_loader,
+                criterion=criterion,
+                optimizer=optimizer,
+                device=args.device,
+                scheduler=scheduler if args.scheduler == "onecycle" else None,
+                use_amp=args.use_amp,
+                max_grad_norm=args.max_grad_norm if args.max_grad_norm > 0 else None,
+                ema=ema,
+                mixup_alpha=args.mixup_alpha,
+                cutmix_alpha=args.cutmix_alpha,
+                use_cutmix=args.use_cutmix,
+            )
+        else:
+            # Standard training
+            assert train_loader is not None, (
+                "train_loader should not be None in standard mode"
+            )
+            train_loss, train_acc = train_epoch(
+                model=model,
+                dataloader=train_loader,
+                criterion=criterion,
+                optimizer=optimizer,
+                device=args.device,
+                scheduler=scheduler if args.scheduler == "onecycle" else None,
+                use_amp=args.use_amp,
+                max_grad_norm=args.max_grad_norm if args.max_grad_norm > 0 else None,
+                ema=ema,
+                mixup_alpha=args.mixup_alpha,
+                cutmix_alpha=args.cutmix_alpha,
+                use_cutmix=args.use_cutmix,
+                use_self_distill=args.use_self_distillation,
+                distill_temperature=args.distill_temperature,
+                distill_alpha=args.distill_alpha,
+            )
 
         # Validate the model (use EMA weights if enabled)
         if ema is not None:
