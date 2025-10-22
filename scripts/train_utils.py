@@ -1043,26 +1043,35 @@ def load_data_class_based(
         class_names_2_idx["willow_tree"],
     }
 
-    # Split dataset indices by class type
+    # Split dataset indices by class type (3-way split)
     detail_indices = []
-    normal_indices = []
+    local_feature_indices = []
+    mixed_indices = []
 
     for idx in range(len(train_dataset)):
         _, label = train_dataset.imgs[idx]  # Get label from ImageFolder
         if label in detail_sensitive_classes:
             detail_indices.append(idx)
+        elif label in local_feature_classes:
+            local_feature_indices.append(idx)
         else:
-            normal_indices.append(idx)
+            mixed_indices.append(idx)
 
     # Create subsets
     detail_subset = Subset(train_dataset, detail_indices)
-    normal_subset = Subset(train_dataset, normal_indices)
+    local_subset = Subset(train_dataset, local_feature_indices)
+    mixed_subset = Subset(train_dataset, mixed_indices)
 
-    print("Dataset split by class sensitivity:")
+    print("Dataset split by class sensitivity (3-way):")
     print(
-        f"  Detail-sensitive classes (no Mixup/CutMix): {len(detail_indices)} samples"
+        f"  Detail-sensitive (human/small animals, NO Mixup/CutMix): {len(detail_indices)} samples"
     )
-    print(f"  Normal classes (with Mixup/CutMix): {len(normal_indices)} samples")
+    print(
+        f"  Local-feature (mechanical/plants, 20% Mixup, 80% CutMix): {len(local_feature_indices)} samples"
+    )
+    print(
+        f"  Mixed-strategy (others, 30% Mixup, 70% CutMix): {len(mixed_indices)} samples"
+    )
 
     # Create DataLoaders
     detail_loader = DataLoader(
@@ -1075,8 +1084,18 @@ def load_data_class_based(
         prefetch_factor=2,
     )
 
-    normal_loader = DataLoader(
-        normal_subset,
+    local_loader = DataLoader(
+        local_subset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
+
+    mixed_loader = DataLoader(
+        mixed_subset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
@@ -1102,7 +1121,7 @@ def load_data_class_based(
         prefetch_factor=2,
     )
 
-    return detail_loader, normal_loader, val_loader
+    return detail_loader, local_loader, mixed_loader, val_loader
 
 
 class LabelSmoothingCrossEntropy(nn.Module):
@@ -1625,7 +1644,8 @@ def train_epoch(
 def train_epoch_class_based(
     model: nn.Module,
     detail_loader: DataLoader,
-    normal_loader: DataLoader,
+    local_loader: DataLoader,
+    mixed_loader: DataLoader,
     criterion: nn.Module,
     optimizer: optim.Optimizer,
     device: str,
@@ -1638,14 +1658,17 @@ def train_epoch_class_based(
     use_cutmix: bool = False,
 ) -> Tuple[float, float]:
     """
-    Train for one epoch using class-based DataLoaders.
+    Train for one epoch using three class-based DataLoaders.
 
-    detail_loader: NO Mixup/CutMix (preserve fine-grained details)
-    normal_loader: WITH Mixup/CutMix (normal augmentation)
+    Three different augmentation strategies:
+    1. detail_loader: NO Mixup/CutMix (preserve fine-grained details)
+    2. local_loader: 20% Mixup, 80% CutMix (enhance local features)
+    3. mixed_loader: 30% Mixup, 70% CutMix (balanced strategy)
 
     Args:
-        detail_loader: DataLoader for detail-sensitive classes
-        normal_loader: DataLoader for other classes
+        detail_loader: DataLoader for detail-sensitive classes (human, small animals)
+        local_loader: DataLoader for local-feature classes (mechanical, plants)
+        mixed_loader: DataLoader for mixed-strategy classes (others)
         Other args: Same as train_epoch()
 
     Returns:
@@ -1659,65 +1682,89 @@ def train_epoch_class_based(
     # Initialize GradScaler
     scaler = torch.amp.grad_scaler.GradScaler(device=DEVICE_TYPE) if use_amp else None
 
-    # Create iterators
+    # Create iterators for all three loaders
     detail_iter = iter(detail_loader)
-    normal_iter = iter(normal_loader)
+    local_iter = iter(local_loader)
+    mixed_iter = iter(mixed_loader)
 
-    # Calculate total steps (sum of both loaders)
-    total_steps = len(detail_loader) + len(normal_loader)
-    progress_bar = tqdm(range(total_steps), desc="Training (Class-Based)", leave=False)
+    # Calculate total steps (sum of all three loaders)
+    total_steps = len(detail_loader) + len(local_loader) + len(mixed_loader)
+    progress_bar = tqdm(
+        range(total_steps), desc="Training (3-Way Class-Based)", leave=False
+    )
 
     for step in progress_bar:
-        # Alternate between loaders or exhaust both
+        # Rotate through three loaders
+        loader_type = step % 3
+
         try:
-            # Try detail loader first (no mixing)
-            if step % 2 == 0 and len(detail_loader) > 0:
+            if loader_type == 0:
+                # Detail-sensitive: NO Mixup/CutMix
                 try:
                     inputs, labels = next(detail_iter)
-                    use_mixing = False  # NO Mixup/CutMix for detail classes
+                    aug_strategy = "detail"  # No mixing
                 except StopIteration:
-                    # Detail loader exhausted, use normal
-                    inputs, labels = next(normal_iter)
-                    use_mixing = True
+                    # Fallback to mixed
+                    inputs, labels = next(mixed_iter)
+                    aug_strategy = "mixed"
+            elif loader_type == 1:
+                # Local-feature: 20% Mixup, 80% CutMix
+                try:
+                    inputs, labels = next(local_iter)
+                    aug_strategy = "local"  # Prefer CutMix
+                except StopIteration:
+                    # Fallback to mixed
+                    inputs, labels = next(mixed_iter)
+                    aug_strategy = "mixed"
             else:
-                # Normal loader (with mixing)
+                # Mixed-strategy: 30% Mixup, 70% CutMix
                 try:
-                    inputs, labels = next(normal_iter)
-                    use_mixing = True  # Use Mixup/CutMix
+                    inputs, labels = next(mixed_iter)
+                    aug_strategy = "mixed"  # Balanced
                 except StopIteration:
-                    # Normal loader exhausted, use detail
+                    # Fallback to detail
                     inputs, labels = next(detail_iter)
-                    use_mixing = False
+                    aug_strategy = "detail"
         except StopIteration:
-            # Both exhausted
+            # All exhausted
             break
 
         inputs, labels = inputs.to(device), labels.to(device)
 
-        # Apply Mixup/CutMix only for normal classes
-        if use_mixing and ((use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0):
-            if use_cutmix and cutmix_alpha > 0 and mixup_alpha > 0:
-                # Both enabled, randomly choose
-                if np.random.rand() < 0.3:
-                    inputs, targets_a, targets_b, lam = mixup_data(
-                        inputs, labels, alpha=mixup_alpha, device=device
-                    )
-                else:
-                    inputs, targets_a, targets_b, lam = cutmix_data(
-                        inputs, labels, alpha=cutmix_alpha, device=device
-                    )
-            elif use_cutmix and cutmix_alpha > 0:
-                inputs, targets_a, targets_b, lam = cutmix_data(
-                    inputs, labels, alpha=cutmix_alpha, device=device
-                )
-            elif mixup_alpha > 0:
+        # Apply Mixup/CutMix based on augmentation strategy
+        if aug_strategy == "detail":
+            # NO mixing for detail-sensitive classes
+            targets_a, targets_b, lam = labels, labels, 1.0
+        elif aug_strategy == "local" and use_cutmix and cutmix_alpha > 0:
+            # Local-feature: 20% Mixup, 80% CutMix
+            if np.random.rand() < 0.2:
+                # 20% Mixup
                 inputs, targets_a, targets_b, lam = mixup_data(
                     inputs, labels, alpha=mixup_alpha, device=device
                 )
             else:
+                # 80% CutMix
+                inputs, targets_a, targets_b, lam = cutmix_data(
+                    inputs, labels, alpha=cutmix_alpha, device=device
+                )
+        elif aug_strategy == "mixed" and (
+            (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0
+        ):
+            # Mixed-strategy: 30% Mixup, 70% CutMix
+            if mixup_alpha > 0 and np.random.rand() < 0.3:
+                # 30% Mixup
+                inputs, targets_a, targets_b, lam = mixup_data(
+                    inputs, labels, alpha=mixup_alpha, device=device
+                )
+            elif use_cutmix and cutmix_alpha > 0:
+                # 70% CutMix
+                inputs, targets_a, targets_b, lam = cutmix_data(
+                    inputs, labels, alpha=cutmix_alpha, device=device
+                )
+            else:
                 targets_a, targets_b, lam = labels, labels, 1.0
         else:
-            # No mixing for detail classes
+            # Fallback: no mixing
             targets_a, targets_b, lam = labels, labels, 1.0
 
         # Standard training step
@@ -1777,11 +1824,17 @@ def train_epoch_class_based(
             correct += predicted.eq(labels).sum().item()
 
         # Update progress
+        mode_name = {
+            "detail": "Detail(No-Mix)",
+            "local": "Local(0.2-Mix,0.8-Cut)",
+            "mixed": "Mixed(0.3-Mix,0.7-Cut)",
+        }.get(aug_strategy, "Unknown")
+
         progress_bar.set_postfix(
             {
                 "Loss": f"{loss.item():.4f}",
                 "Acc": f"{100.0 * correct / total:.2f}%",
-                "Mode": "Detail" if not use_mixing else "Normal",
+                "Strategy": mode_name,
             }
         )
 

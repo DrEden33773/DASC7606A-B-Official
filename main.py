@@ -567,11 +567,14 @@ def train(args, model: nn.Module):
             logger.info("--label_smoothing disabled while using Mixup + CutMix")
 
             if args.use_class_based_loader:
-                logger.info("Using CLASS-BASED augmentation strategy:")
+                logger.info("Using 3-WAY CLASS-BASED augmentation strategy:")
                 logger.info(
                     "  • Detail-sensitive (human/small animals): NO Mixup/CutMix (preserve details)"
                 )
-                logger.info("  • Other classes: Mixup + CutMix as normal")
+                logger.info(
+                    "  • Local-feature (mechanical/plants): 20% Mixup, 80% CutMix"
+                )
+                logger.info("  • Mixed-strategy (others): 30% Mixup, 70% CutMix")
             else:
                 logger.info("Using ADAPTIVE augmentation strategy (category-aware):")
                 logger.info(
@@ -598,10 +601,10 @@ def train(args, model: nn.Module):
 
     # Load data - class-based or standard
     if args.use_class_based_loader:
-        # Class-based loading for differential augmentation
+        # Class-based loading for differential augmentation (3-way split)
         from scripts.train_utils import load_data_class_based
 
-        detail_loader, normal_loader, val_loader = load_data_class_based(
+        detail_loader, local_loader, mixed_loader, val_loader = load_data_class_based(
             data_dir=data_dir,
             batch_size=args.batch_size,
             dataset_type=args.dataset,
@@ -613,9 +616,9 @@ def train(args, model: nn.Module):
             randaugment_m=args.randaugment_m,
         )
 
-        # Use longer loader for steps_per_epoch calculation
-        steps_per_epoch = max(len(detail_loader), len(normal_loader))
-        train_loader = None  # Will use dual loaders
+        # Use sum of all loaders for steps_per_epoch calculation
+        steps_per_epoch = len(detail_loader) + len(local_loader) + len(mixed_loader)
+        train_loader = None  # Will use three loaders
     else:
         # Standard loading
         train_loader, val_loader = load_data(
@@ -631,7 +634,8 @@ def train(args, model: nn.Module):
         )
         steps_per_epoch = len(train_loader)
         detail_loader = None
-        normal_loader = None
+        local_loader = None
+        mixed_loader = None
 
     # Get number of classes
     num_classes = 10 if args.dataset == "cifar10" else 100
@@ -699,14 +703,19 @@ def train(args, model: nn.Module):
     for epoch in range(args.num_epochs):
         # Train for one epoch
         if args.use_class_based_loader:
-            # Class-based training: use two loaders alternately
-            assert detail_loader is not None and normal_loader is not None, (
-                "detail_loader and normal_loader should not be None in class-based mode"
+            # Class-based training: use three loaders with different strategies
+            assert (
+                detail_loader is not None
+                and local_loader is not None
+                and mixed_loader is not None
+            ), (
+                "All three loaders (detail, local, mixed) should not be None in class-based mode"
             )
             train_loss, train_acc = train_epoch_class_based(
                 model=model,
                 detail_loader=detail_loader,
-                normal_loader=normal_loader,
+                local_loader=local_loader,
+                mixed_loader=mixed_loader,
                 criterion=criterion,
                 optimizer=optimizer,
                 device=args.device,
