@@ -179,13 +179,13 @@ def parse_args():
     parser.add_argument(
         "--dropout",
         type=float,
-        default=0.3,
+        default=0.2,  # old: 0.3 (0.2 for wrn-28-10)
         help="Dropout rate for regularization. Recommended: 0.3 for Wide ResNet, 0.5 for ResNet",
     )
     parser.add_argument(
         "--drop_path_rate",
         type=float,
-        default=0.1,
+        default=0.0,  # old: 0.1 (0.0 for wrn-28-10)
         help="Stochastic Depth (DropPath) rate for Wide ResNet (0.0=disabled, 0.1=best for WRN-28-10). "
         "Randomly drops residual branches during training to reduce overfitting. "
         "Achieved F1=0.8131 with drop_path=0.1. Only effective for Wide ResNet models.",
