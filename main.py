@@ -210,7 +210,7 @@ def parse_args():
         "--batch_size", type=int, default=128, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_epochs", type=int, default=300, help="Number of training epochs"
+        "--num_epochs", type=int, default=400, help="Number of training epochs"
     )
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument(
@@ -256,8 +256,14 @@ def parse_args():
     parser.add_argument(
         "--use_class_weights",
         action="store_true",
-        default=False,
+        default=True,
         help="Use class weights to adjust focus on different classes",
+    )
+    parser.add_argument(
+        "--no_class_weights",
+        dest="use_class_weights",
+        action="store_false",
+        help="Disable class weights",
     )
     parser.add_argument(
         "--weight_strategy",
