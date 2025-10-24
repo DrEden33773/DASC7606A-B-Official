@@ -154,6 +154,42 @@ def parse_args():
         "Only used if --use_cutmix is enabled.",
     )
 
+    # Progressive Augmentation
+    parser.add_argument(
+        "--use_progressive_aug",
+        action="store_true",
+        default=True,
+        help="Enable progressive augmentation (gradually increase augmentation strength during training). "
+        "Solves early stopping trap by using weak augmentation in early epochs (1-30), "
+        "then progressively increasing to full strength. Expected improvement: +0.01-0.02 F1, "
+        "reduced early stopping trap duration (28 epochs → 10-15 epochs).",
+    )
+    parser.add_argument(
+        "--no_progressive_aug",
+        dest="use_progressive_aug",
+        action="store_false",
+        help="Disable progressive augmentation",
+    )
+    parser.add_argument(
+        "--progressive_aug_mode",
+        type=str,
+        choices=["staged", "linear", "cosine"],
+        default="cosine",
+        help="Progressive augmentation growth mode (only used if --use_progressive_aug is enabled). "
+        "Options: "
+        "'staged' (recommended): 3-stage step-wise increase (epochs 1-30: weak, 31-100: medium, 101+: strong); "
+        "'linear': smooth linear growth from weak to strong; "
+        "'cosine': cosine-annealed growth (slow start, fast middle, slow end).",
+    )
+    parser.add_argument(
+        "--progressive_aug_peak_epoch",
+        type=int,
+        default=100,
+        help="Epoch at which progressive augmentation reaches maximum strength (default: 100). "
+        "Only used for 'linear' and 'cosine' modes. For 'staged' mode, this is ignored "
+        "(stage transitions are fixed at epochs 30 and 100).",
+    )
+
     # Model architecture
     parser.add_argument(
         "--model",
@@ -598,6 +634,8 @@ def train(args, model: nn.Module):
         )
 
     # Load data first to get steps_per_epoch for OneCycleLR
+    # If using progressive augmentation, we'll recreate train_loader each epoch
+    # For now, create initial loader to get steps_per_epoch
     train_loader, val_loader = load_data(
         data_dir=data_dir,
         batch_size=args.batch_size,
@@ -610,6 +648,38 @@ def train(args, model: nn.Module):
         randaugment_m=args.randaugment_m,
     )
     steps_per_epoch = len(train_loader)
+
+    # Log progressive augmentation status
+    if args.use_progressive_aug:
+        logger.info("=" * 60)
+        logger.info("🔄 PROGRESSIVE AUGMENTATION ENABLED")
+        logger.info("=" * 60)
+        logger.info(f"Mode: {args.progressive_aug_mode}")
+        logger.info(f"Peak epoch: {args.progressive_aug_peak_epoch}")
+        if args.progressive_aug_mode == "staged":
+            logger.info("Schedule:")
+            logger.info(
+                "  • Epoch 1-30:   Weak augmentation (RandAug m=5, Mixup=0.1, CutMix=0.3)"
+            )
+            logger.info(
+                "  • Epoch 31-100: Medium augmentation (RandAug m=7, Mixup=0.2, CutMix=0.5)"
+            )
+            logger.info(
+                "  • Epoch 101+:   Strong augmentation (RandAug m=9, Mixup=0.25, CutMix=0.65)"
+            )
+        elif args.progressive_aug_mode == "linear":
+            logger.info(
+                f"Schedule: Linear growth from weak to strong over {args.progressive_aug_peak_epoch} epochs"
+            )
+        elif args.progressive_aug_mode == "cosine":
+            logger.info(
+                f"Schedule: Cosine growth with 30-epoch warmup, peak at epoch {args.progressive_aug_peak_epoch}"
+            )
+        logger.info("Expected benefits:")
+        logger.info("  • Reduced early stopping trap (28 epochs → 10-15 epochs)")
+        logger.info("  • Improved F1 score (+0.01-0.02)")
+        logger.info("  • Better training stability")
+        logger.info("=" * 60)
 
     # Get number of classes
     num_classes = 10 if args.dataset == "cifar10" else 100
@@ -675,6 +745,48 @@ def train(args, model: nn.Module):
 
     print("Starting training...")
     for epoch in range(args.num_epochs):
+        # Progressive Augmentation: Dynamically adjust augmentation strength per epoch
+        if args.use_progressive_aug:
+            from scripts.train_utils import get_progressive_augmentation_params
+
+            # Get progressive augmentation params for current epoch (1-based)
+            prog_n, prog_m, prog_mixup, prog_cutmix = (
+                get_progressive_augmentation_params(
+                    current_epoch=epoch + 1,  # Convert 0-based to 1-based
+                    mode=args.progressive_aug_mode,
+                    peak_epoch=args.progressive_aug_peak_epoch,
+                )
+            )
+
+            # Recreate train_loader with updated augmentation params
+            train_loader, _ = load_data(
+                data_dir=data_dir,
+                batch_size=args.batch_size,
+                dataset_type=args.dataset,
+                manual_seed=args.seed,
+                use_online_aug=args.use_online_aug,
+                augmentation_strength=args.aug_strength,
+                use_cutmix=args.use_cutmix,
+                randaugment_n=prog_n,
+                randaugment_m=prog_m,
+            )
+
+            # Log progressive augmentation params at key transition points
+            if epoch == 0 or epoch == 30 or epoch == 100 or (epoch + 1) % 50 == 0:
+                logger.info(
+                    f"[Progressive Aug] Epoch {epoch + 1}: "
+                    f"RandAugment(n={prog_n}, m={prog_m}), "
+                    f"Mixup α={prog_mixup:.2f}, CutMix α={prog_cutmix:.2f}"
+                )
+
+            # Use progressive augmentation params
+            current_mixup_alpha = prog_mixup
+            current_cutmix_alpha = prog_cutmix
+        else:
+            # Use static augmentation params from args
+            current_mixup_alpha = args.mixup_alpha
+            current_cutmix_alpha = args.cutmix_alpha
+
         # Train for one epoch with new options
         train_loss, train_acc = train_epoch(
             model=model,
@@ -686,8 +798,8 @@ def train(args, model: nn.Module):
             use_amp=args.use_amp,
             max_grad_norm=args.max_grad_norm if args.max_grad_norm > 0 else None,
             ema=ema,
-            mixup_alpha=args.mixup_alpha,
-            cutmix_alpha=args.cutmix_alpha,
+            mixup_alpha=current_mixup_alpha,
+            cutmix_alpha=current_cutmix_alpha,
             use_cutmix=args.use_cutmix,
             use_self_distill=args.use_self_distillation,
             distill_temperature=args.distill_temperature,

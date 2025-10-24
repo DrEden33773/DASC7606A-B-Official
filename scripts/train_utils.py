@@ -1,3 +1,4 @@
+import math
 import os
 from typing import Literal, Optional, Tuple
 
@@ -16,6 +17,104 @@ from tqdm import tqdm
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 
 class_names_2_idx: dict[str, int] = {}
+
+
+# ============================================================================
+# Progressive Augmentation Functions
+# ============================================================================
+
+
+def get_progressive_augmentation_params(
+    current_epoch: int,
+    mode: str = "staged",
+    peak_epoch: int = 100,
+) -> Tuple[int, int, float, float]:
+    """
+    Calculate progressive augmentation parameters for the current epoch.
+
+    This implements a curriculum learning strategy where augmentation strength
+    gradually increases during training to improve stability and performance.
+
+    Args:
+        current_epoch: Current training epoch (1-based indexing)
+        mode: Progressive augmentation mode
+            - "staged": Three-stage step-wise increase (recommended for stability)
+            - "linear": Linear growth from weak to strong
+            - "cosine": Cosine-annealed growth (slow start, fast middle, slow end)
+        peak_epoch: Epoch at which augmentation reaches maximum strength
+
+    Returns:
+        Tuple of (randaugment_n, randaugment_m, mixup_alpha, cutmix_alpha)
+
+    Example:
+        >>> # Get params for epoch 50 with staged mode
+        >>> n, m, mixup, cutmix = get_progressive_augmentation_params(50, "staged", 100)
+        >>> print(f"RandAug(n={n}, m={m}), Mixup={mixup:.2f}, CutMix={cutmix:.2f}")
+        RandAug(n=2, m=7), Mixup=0.20, CutMix=0.50
+
+    References:
+        - Curriculum Learning (Bengio et al., 2009)
+        - AutoAugment (Cubuk et al., 2019)
+    """
+    if mode == "staged":
+        # Three-stage step-wise increase
+        # Stage 1 (Early): Weak augmentation to learn basic features
+        # Stage 2 (Middle): Medium augmentation for generalization
+        # Stage 3 (Late): Strong augmentation for maximum regularization
+        if current_epoch <= 30:
+            # Early Stage: Let model learn basic classification first
+            return 1, 5, 0.1, 0.3
+        elif current_epoch <= 100:
+            # Middle Stage: Gradually increase regularization
+            return 2, 7, 0.2, 0.5
+        else:
+            # Late Stage: Maximum augmentation (current default values)
+            return 2, 9, 0.25, 0.65
+
+    elif mode == "linear":
+        # Linear growth from weak to strong
+        # Smooth transition suitable for long training (300+ epochs)
+        progress = min(current_epoch / peak_epoch, 1.0)
+
+        # RandAugment: n=2 (keep constant), m: 5 → 9
+        n = 2
+        m = 5 + int(4 * progress)
+
+        # Mixup alpha: 0.1 → 0.25
+        mixup_alpha = 0.1 + 0.15 * progress
+
+        # CutMix alpha: 0.3 → 0.65
+        cutmix_alpha = 0.3 + 0.35 * progress
+
+        return n, m, mixup_alpha, cutmix_alpha
+
+    elif mode == "cosine":
+        # Cosine-annealed growth with warmup
+        # Slow growth at start/end, fast in middle
+        warmup_epochs = 30
+
+        if current_epoch < warmup_epochs:
+            # Warmup: Keep minimal augmentation
+            return 1, 5, 0.1, 0.3
+
+        # Cosine growth after warmup
+        progress = min(
+            (current_epoch - warmup_epochs) / (peak_epoch - warmup_epochs), 1.0
+        )
+        cosine_progress = (1 - math.cos(progress * math.pi)) / 2  # 0 → 1
+
+        n = 2
+        m = 5 + int(4 * cosine_progress)
+        mixup_alpha = 0.1 + 0.15 * cosine_progress
+        cutmix_alpha = 0.3 + 0.35 * cosine_progress
+
+        return n, m, mixup_alpha, cutmix_alpha
+
+    else:
+        raise ValueError(
+            f"Unknown progressive augmentation mode: {mode}. "
+            f"Supported modes: 'staged', 'linear', 'cosine'"
+        )
 
 
 # ============================================================================
