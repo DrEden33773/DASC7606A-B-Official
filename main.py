@@ -205,7 +205,7 @@ def parse_args():
     parser.add_argument(
         "--se_reduction",
         type=int,
-        default=16,
+        default=8,
         help="SE-Net reduction ratio (only used if --use_se is enabled). "
         "Options: 8 (stronger attention), 16 (standard, recommended), 32 (lighter attention).",
     )
