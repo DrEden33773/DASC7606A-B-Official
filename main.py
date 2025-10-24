@@ -634,9 +634,8 @@ def train(args, model: nn.Module):
         )
 
     # Load data first to get steps_per_epoch for OneCycleLR
-    # If using progressive augmentation, we'll recreate train_loader each epoch
-    # For now, create initial loader to get steps_per_epoch
-    train_loader, val_loader = load_data(
+    # With progressive augmentation, we create DataLoader ONCE and update transform params
+    train_loader, val_loader, progressive_aug_transform = load_data(
         data_dir=data_dir,
         batch_size=args.batch_size,
         dataset_type=args.dataset,
@@ -646,6 +645,7 @@ def train(args, model: nn.Module):
         use_cutmix=args.use_cutmix,
         randaugment_n=args.randaugment_n,
         randaugment_m=args.randaugment_m,
+        use_progressive_aug=args.use_progressive_aug,
     )
     steps_per_epoch = len(train_loader)
 
@@ -745,8 +745,9 @@ def train(args, model: nn.Module):
 
     print("Starting training...")
     for epoch in range(args.num_epochs):
-        # Progressive Augmentation: Dynamically adjust augmentation strength per epoch
-        if args.use_progressive_aug:
+        # Progressive Augmentation: Dynamically update augmentation strength
+        # NO DataLoader recreation! Just update transform parameters (preserves workers)
+        if args.use_progressive_aug and progressive_aug_transform is not None:
             from scripts.train_utils import get_progressive_augmentation_params
 
             # Get progressive augmentation params for current epoch (1-based)
@@ -758,18 +759,9 @@ def train(args, model: nn.Module):
                 )
             )
 
-            # Recreate train_loader with updated augmentation params
-            train_loader, _ = load_data(
-                data_dir=data_dir,
-                batch_size=args.batch_size,
-                dataset_type=args.dataset,
-                manual_seed=args.seed,
-                use_online_aug=args.use_online_aug,
-                augmentation_strength=args.aug_strength,
-                use_cutmix=args.use_cutmix,
-                randaugment_n=prog_n,
-                randaugment_m=prog_m,
-            )
+            # Update transform parameters (NO DataLoader recreation!)
+            # This preserves worker processes and eliminates reload overhead
+            progressive_aug_transform.update_params(n=prog_n, m=prog_m)
 
             # Log progressive augmentation params at key transition points
             if epoch == 0 or epoch == 30 or epoch == 100 or (epoch + 1) % 50 == 0:
@@ -779,7 +771,7 @@ def train(args, model: nn.Module):
                     f"Mixup α={prog_mixup:.2f}, CutMix α={prog_cutmix:.2f}"
                 )
 
-            # Use progressive augmentation params
+            # Use progressive augmentation params for Mixup/CutMix
             current_mixup_alpha = prog_mixup
             current_cutmix_alpha = prog_cutmix
         else:

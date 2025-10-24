@@ -24,6 +24,85 @@ class_names_2_idx: dict[str, int] = {}
 # ============================================================================
 
 
+class ProgressiveRandAugment(A.BaseCompose):
+    """
+    Dynamic RandAugment that can update parameters without recreating DataLoader.
+
+    This solves the performance issue where recreating DataLoader each epoch
+    causes worker processes to restart, losing the benefits of persistent workers.
+
+    Inherits from A.BaseCompose to be compatible with Albumentations pipelines.
+
+    Usage:
+        # Create once
+        progressive_aug = ProgressiveRandAugment(n=2, m=9)
+
+        # Update parameters each epoch (no DataLoader recreation needed)
+        progressive_aug.update_params(n=2, m=7)
+    """
+
+    def __init__(self, n: int = 2, m: int = 9):
+        """
+        Initialize with initial parameters.
+
+        Args:
+            n: Number of augmentation operations to apply
+            m: Magnitude of augmentations (0-10)
+        """
+        # Initialize BaseCompose with empty transforms list (we manage our own pool)
+        super().__init__([], p=1.0)
+        self.n = n
+        self.m = m
+        self.augmentation_pool = []
+        self._rebuild_pool()
+
+    def _rebuild_pool(self):
+        """Rebuild augmentation pool with current n and m parameters."""
+        from scripts.data_augmentation import get_randaugment_transforms
+
+        self.augmentation_pool = get_randaugment_transforms(
+            n_ops=self.n, magnitude=self.m
+        )
+
+    def update_params(self, n: int, m: int):
+        """
+        Update augmentation parameters dynamically.
+
+        This method allows changing augmentation strength without recreating
+        the DataLoader, preserving worker processes and improving performance.
+
+        Args:
+            n: New number of augmentation operations
+            m: New magnitude of augmentations (0-10)
+        """
+        if n != self.n or m != self.m:
+            self.n = n
+            self.m = m
+            self._rebuild_pool()
+
+    def __call__(self, force_apply: bool = False, **kwargs) -> dict:
+        """Apply RandAugment to the image."""
+        import random
+
+        image = kwargs.get("image")
+        if image is None:
+            raise ValueError("ProgressiveRandAugment requires 'image' in kwargs")
+
+        # Ensure augmentation_pool is not empty
+        if not self.augmentation_pool:
+            return {"image": image}
+
+        # Randomly select N operations (ensure we don't sample more than available)
+        sample_size = min(self.n, len(self.augmentation_pool))
+        selected_ops = random.sample(self.augmentation_pool, k=sample_size)
+
+        for op in selected_ops:
+            augmented = op(image=image)
+            image = augmented["image"]
+
+        return {"image": image}
+
+
 def get_progressive_augmentation_params(
     current_epoch: int,
     mode: str = "staged",
@@ -658,6 +737,8 @@ def get_train_transforms(
     use_cutmix: bool = False,
     randaugment_n: int = 2,
     randaugment_m: int = 9,
+    use_progressive_aug: bool = False,
+    progressive_aug_transform: Optional[ProgressiveRandAugment] = None,
 ) -> AlbumentationsTransform:
     """
     Get training transforms with online augmentation.
@@ -692,11 +773,25 @@ def get_train_transforms(
         # Pure RandAugment mode (no stacking with traditional augmentation)
         # This is the correct way to use RandAugment per the original paper
         # F1=0.8131 achieved with N=2, M=9
-        from scripts.data_augmentation import RandAugment
+
+        # Use progressive augmentation if enabled (avoids DataLoader recreation)
+        if use_progressive_aug:
+            if progressive_aug_transform is None:
+                # Create new ProgressiveRandAugment instance
+                progressive_aug_transform = ProgressiveRandAugment(
+                    n=randaugment_n, m=randaugment_m
+                )
+            # Use the existing/new instance (can be updated without recreating DataLoader)
+            randaug_transform = progressive_aug_transform
+        else:
+            # Use static RandAugment
+            from scripts.data_augmentation import RandAugment
+
+            randaug_transform = RandAugment(n=randaugment_n, m=randaugment_m)
 
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
             [
-                RandAugment(n=randaugment_n, m=randaugment_m),
+                randaug_transform,
                 A.HorizontalFlip(p=0.5),  # Basic geometric transform
                 A.Normalize(mean=mean, std=std),
                 ToTensorV2(),
@@ -912,6 +1007,8 @@ def load_data(
     use_cutmix: bool = False,
     randaugment_n: int = 2,
     randaugment_m: int = 9,
+    use_progressive_aug: bool = False,
+    progressive_aug_transform: Optional[ProgressiveRandAugment] = None,
 ):
     """
     Load the data from the data directory and split it into training and validation sets.
@@ -937,15 +1034,29 @@ def load_data(
         train_loader: The training data loader
         val_loader: The validation data loader (always without augmentation)
     """
+    # Store reference to progressive aug transform (if enabled)
+    prog_transform_ref = None
+
     # Determine transforms based on augmentation strategy
     if use_online_aug:
         # ONLINE augmentation: apply transforms dynamically
+        # If progressive aug is enabled and no transform provided, create one
+        if use_progressive_aug and progressive_aug_transform is None:
+            progressive_aug_transform = ProgressiveRandAugment(
+                n=randaugment_n, m=randaugment_m
+            )
+            prog_transform_ref = progressive_aug_transform
+        elif use_progressive_aug:
+            prog_transform_ref = progressive_aug_transform
+
         train_transforms = get_train_transforms(
             dataset_type=dataset_type,
             augmentation_strength=augmentation_strength,
             use_cutmix=use_cutmix,
             randaugment_n=randaugment_n,
             randaugment_m=randaugment_m,
+            use_progressive_aug=use_progressive_aug,
+            progressive_aug_transform=progressive_aug_transform,
         )
     else:
         # OFFLINE augmentation: data is already augmented, just normalize
@@ -1057,7 +1168,11 @@ def load_data(
         class_names_2_idx["willow_tree"],
     }
 
-    return train_loader, val_loader
+    # Return progressive transform reference if enabled (for dynamic updates)
+    if use_progressive_aug and prog_transform_ref is not None:
+        return train_loader, val_loader, prog_transform_ref
+    else:
+        return train_loader, val_loader, None
 
 
 class LabelSmoothingCrossEntropy(nn.Module):
