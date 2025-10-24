@@ -585,13 +585,29 @@ def generate_class_weights(
         num_classes: Number of classes (typically 100 for CIFAR-100)
         strategy: Weighting strategy. Options:
             - "uniform": All classes have weight 1.0 (default behavior)
-            - "long_board": Long-board effect strategy (recommended)
+            - "long_board": Long-board effect strategy v1 (conservative)
                 * Extreme high-score (F1≥0.93): weight=0.75 (reduce attention)
                 * High-score (F1 0.88-0.92): weight=0.9 (slight reduction)
                 * Mid-high score (F1 0.80-0.87): weight=1.1 (slight increase)
                 * Medium score (F1 0.70-0.79): weight=1.6 (major increase)
                 * Detail-sensitive low (F1<0.70, humans/small animals): weight=1.0 (don't force)
                 * Other low-score (F1<0.70, others): weight=1.4 (increase)
+            - "long_board_v2": Long-board effect strategy v2 (aggressive, FAILED in experiments)
+                * Extreme high-score (F1≥0.93): weight=0.3 (major reduction)
+                * High-score (F1 0.88-0.92): weight=0.5 (reduction)
+                * Mid-high score (F1 0.80-0.87): weight=2.0 (aggressive increase)
+                * Medium score (F1 0.70-0.79): weight=1.0 (balanced)
+                * Detail-sensitive low (F1<0.70, humans/small animals): weight=0.2 (minimal)
+                * Other low-score (F1<0.70, others): weight=1.3 (moderate increase)
+                * Result: F1=0.80 (worse than baseline 0.82) - TOO AGGRESSIVE
+            - "long_board_v2.5": Long-board effect strategy v2.5 (moderate, RECOMMENDED)
+                * Extreme high-score (F1≥0.93): weight=0.6 (moderate reduction)
+                * High-score (F1 0.88-0.92): weight=0.7 (moderate reduction)
+                * Mid-high score (F1 0.80-0.87): weight=1.4 (moderate increase)
+                * Medium score (F1 0.70-0.79): weight=1.5 (maintain v1's strategy)
+                * Detail-sensitive low (F1<0.70, humans/small animals): weight=0.5 (prevent abandonment)
+                * Other low-score (F1<0.70, others): weight=1.3 (moderate increase)
+                * Weight range: 0.5-1.5 (3x span, balanced approach)
         device: Device to place the weight tensor on
 
     Returns:
@@ -599,18 +615,15 @@ def generate_class_weights(
 
     Example::
 
-        # Generate long-board weights
-        class_weights = generate_class_weights(100, strategy="long_board", device="cuda")
+        # Generate long-board v2.5 weights (moderate, recommended)
+        class_weights = generate_class_weights(100, strategy="long_board_v2.5", device="cuda")
 
         # Use with CrossEntropyLoss
         criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     Note:
         The class assignments are based on WRN-28-12 performance analysis (F1=0.82).
-        The weights are designed to:
-        1. Prevent over-optimization of already excellent classes
-        2. Focus learning on classes with significant improvement potential
-        3. Respect the intrinsic difficulty of detail-sensitive classes
+        All strategies use the same class groupings, only weights differ.
     """
     # Initialize all weights to 1.0
     weights = torch.ones(num_classes, dtype=torch.float32)
@@ -619,156 +632,171 @@ def generate_class_weights(
         # All classes have equal weight
         return weights.to(device)
 
-    elif strategy == "long_board":
-        # CIFAR-100 class name to index mapping (standard order)
+    # Define class groupings (shared across all long_board strategies)
+    # Based on WRN-28-12 performance analysis (F1=0.82)
+    elif strategy in ["long_board", "long_board_v2", "long_board_v2.5"]:
         cifar100_classes = CIFAR100Downloader.CLASS_NAMES
 
-        # Group A: Extreme high-score (F1 ≥ 0.93) - weight=0.75
-        extreme_high = {
-            "sunflower",
-            "lawn_mower",
-            "wardrobe",
-            "palm_tree",
-            "pickup_truck",
-            "tank",
+        # Define class groups based on F1-score ranges and characteristics
+        class_groups = {
+            "extreme_high": {  # F1 ≥ 0.93
+                "sunflower",
+                "lawn_mower",
+                "wardrobe",
+                "palm_tree",
+                "pickup_truck",
+                "tank",
+            },
+            "high_score": {  # F1 0.88-0.92
+                "bicycle",
+                "orange",
+                "road",
+                "motorcycle",
+                "rocket",
+                "skunk",
+                "tractor",
+                "castle",
+                "aquarium_fish",
+                "bottle",
+                "chair",
+                "chimpanzee",
+                "butterfly",
+            },
+            "mid_high": {  # F1 0.80-0.87
+                "lion",
+                "tiger",
+                "elephant",
+                "camel",
+                "clock",
+                "cloud",
+                "cockroach",
+                "fox",
+                "hamster",
+                "kangaroo",
+                "keyboard",
+                "leopard",
+                "mushroom",
+                "plain",
+                "poppy",
+                "porcupine",
+                "raccoon",
+                "sea",
+                "spider",
+                "streetcar",
+                "television",
+                "train",
+                "trout",
+                "bed",
+                "bee",
+                "beetle",
+                "can",
+                "caterpillar",
+                "cattle",
+                "cup",
+                "dinosaur",
+                "house",
+                "mountain",
+                "orchid",
+                "pear",
+                "plate",
+                "rose",
+                "snail",
+                "sweet_pepper",
+                "table",
+                "telephone",
+                "tulip",
+                "turtle",
+                "wolf",
+                "worm",
+            },
+            "medium": {  # F1 0.70-0.79
+                "beaver",
+                "crocodile",
+                "forest",
+                "dolphin",
+                "maple_tree",
+                "whale",
+                "flatfish",
+                "lamp",
+                "lobster",
+                "pine_tree",
+                "possum",
+                "rabbit",
+                "squirrel",
+                "bear",
+                "bridge",
+                "bus",
+                "couch",
+                "crab",
+            },
+            "detail_sensitive": {  # F1 < 0.70 (humans/small animals)
+                "boy",
+                "girl",
+                "man",
+                "woman",
+                "baby",
+                "otter",
+                "shrew",
+                "mouse",
+            },
+            "other_low": {  # F1 < 0.70 (others)
+                "lizard",
+                "oak_tree",
+                "willow_tree",
+                "shark",
+                "bowl",
+                "ray",
+                "snake",
+                "seal",
+                "apple",
+            },
         }
 
-        # Group B: High-score (F1 0.88-0.92) - weight=0.9
-        high_score = {
-            "bicycle",
-            "orange",
-            "road",
-            "motorcycle",
-            "rocket",
-            "skunk",
-            "tractor",
-            "castle",
-            "aquarium_fish",
-            "bottle",
-            "chair",
-            "chimpanzee",
-            "butterfly",
+        # Define weight mappings for each strategy
+        weight_mappings = {
+            "long_board": {  # v1: Conservative (range 0.75-1.6, 2.13x span)
+                "extreme_high": 0.75,
+                "high_score": 0.9,
+                "mid_high": 1.1,
+                "medium": 1.6,
+                "detail_sensitive": 1.0,
+                "other_low": 1.4,
+            },
+            "long_board_v2": {  # v2: Aggressive, FAILED (range 0.2-2.0, 10x span)
+                "extreme_high": 0.3,
+                "high_score": 0.5,
+                "mid_high": 2.0,
+                "medium": 1.0,
+                "detail_sensitive": 0.2,
+                "other_low": 1.3,
+            },
+            "long_board_v2.5": {  # v2.5: Moderate, RECOMMENDED (range 0.5-1.5, 3x span)
+                "extreme_high": 0.6,
+                "high_score": 0.7,
+                "mid_high": 1.4,
+                "medium": 1.5,
+                "detail_sensitive": 0.5,
+                "other_low": 1.3,
+            },
         }
 
-        # Group C: Mid-high score (F1 0.80-0.87) - weight=1.1
-        mid_high = {
-            "lion",
-            "tiger",
-            "elephant",
-            "camel",
-            "clock",
-            "cloud",
-            "cockroach",
-            "fox",
-            "hamster",
-            "kangaroo",
-            "keyboard",
-            "leopard",
-            "mushroom",
-            "plain",
-            "poppy",
-            "porcupine",
-            "raccoon",
-            "sea",
-            "spider",
-            "streetcar",
-            "television",
-            "train",
-            "trout",
-            "bed",
-            "bee",
-            "beetle",
-            "can",
-            "caterpillar",
-            "cattle",
-            "cup",
-            "dinosaur",
-            "house",
-            "mountain",
-            "orchid",
-            "pear",
-            "plate",
-            "rose",
-            "snail",
-            "sweet_pepper",
-            "table",
-            "telephone",
-            "tulip",
-            "turtle",
-            "wolf",
-            "worm",
-        }
+        # Get the weight mapping for the selected strategy
+        weight_map = weight_mappings[strategy]
 
-        # Group D: Medium score (F1 0.70-0.79) - weight=1.6
-        medium_score = {
-            "beaver",
-            "crocodile",
-            "forest",
-            "dolphin",
-            "maple_tree",
-            "whale",
-            "flatfish",
-            "lamp",
-            "lobster",
-            "pine_tree",
-            "possum",
-            "rabbit",
-            "squirrel",
-            "bear",
-            "bridge",
-            "bus",
-            "couch",
-            "crab",
-        }
-
-        # Group E: Detail-sensitive low-score (F1 < 0.70, humans/small animals) - weight=1.0
-        detail_sensitive = {
-            "boy",
-            "girl",
-            "man",
-            "woman",
-            "baby",
-            "otter",
-            "shrew",
-            "mouse",
-        }
-
-        # Group F: Other low-score (F1 < 0.70, non-detail-sensitive) - weight=1.4
-        other_low = {
-            "lizard",
-            "oak_tree",
-            "willow_tree",
-            "shark",
-            "bowl",
-            "ray",
-            "snake",
-            "seal",
-            "apple",
-            "porcupine",  # Added some edge cases
-        }
-
-        # Apply weights based on class membership
+        # Apply weights to classes based on their group membership
         for idx, class_name in enumerate(cifar100_classes):
-            if class_name in extreme_high:
-                weights[idx] = 0.75
-            elif class_name in high_score:
-                weights[idx] = 0.9
-            elif class_name in mid_high:
-                weights[idx] = 1.1
-            elif class_name in medium_score:
-                weights[idx] = 1.6
-            elif class_name in detail_sensitive:
-                weights[idx] = 1.0
-            elif class_name in other_low:
-                weights[idx] = 1.4
-            # else: default weight=1.0
+            for group_name, group_classes in class_groups.items():
+                if class_name in group_classes:
+                    weights[idx] = weight_map[group_name]
+                    break
+            # If class not in any group, use default weight 1.0 (already initialized)
 
         return weights.to(device)
 
     else:
         raise ValueError(
             f"Unknown weight strategy: {strategy}. "
-            f"Supported strategies: 'uniform', 'long_board'"
+            f"Supported strategies: 'uniform', 'long_board', 'long_board_v2', 'long_board_v2.5'"
         )
 
 

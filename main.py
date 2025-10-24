@@ -268,11 +268,13 @@ def parse_args():
     parser.add_argument(
         "--weight_strategy",
         type=str,
-        choices=["uniform", "long_board"],
-        default="long_board",
+        choices=["uniform", "long_board", "long_board_v2", "long_board_v2.5"],
+        default="long_board_v2.5",
         help="Class weighting strategy. Options: "
         "'uniform' (all weights=1.0), "
-        "'long_board' (focus on classes with most improvement potential, recommended)",
+        "'long_board' (conservative, weight range 0.75-1.6), "
+        "'long_board_v2' (aggressive, weight range 0.2-2.0, failed in experiments), "
+        "'long_board_v2.5' (moderate, weight range 0.5-1.5, recommended after v2 failure)",
     )
 
     # Mixed precision training
@@ -356,8 +358,20 @@ def parse_args():
     parser.add_argument(
         "--early_stopping_patience",
         type=int,
-        default=30,  # 35 or 30 does not matter (in most cases)
-        help="Early stopping patience. Increased to 20 to allow more training before stopping",
+        default=35,  # Increased for long-board v2 strategy
+        help="Early stopping patience. Increased to 35 to allow more training before stopping",
+    )
+    parser.add_argument(
+        "--early_stopping_min_delta",
+        type=float,
+        default=0.001,
+        help="Minimum improvement delta to reset patience counter (filter noise)",
+    )
+    parser.add_argument(
+        "--early_stopping_warmup",
+        type=int,
+        default=50,
+        help="Number of warmup epochs before early stopping can trigger (protect early exploration)",
     )
 
     # Hardware
@@ -723,30 +737,26 @@ def train(args, model: nn.Module):
         )
 
         # Check for improvement and save the best model
-        # Two-tier strategy: Prioritize Loss, then F1
-        # 1. If Loss doesn't increase, save (regardless of F1)
-        # 2. If Loss increases but F1 improves, also save
+        # Two-tier strategy with min_delta threshold: Prioritize Loss, then F1
+        # 1. If Loss improves significantly (>= min_delta), save
+        # 2. If F1 improves significantly (>= min_delta), save
 
         save_model = False
         save_reason = ""
-        if val_loss <= best_val_loss:
-            # Priority 1: Loss didn't increase - save model
+        if val_loss <= (best_val_loss - args.early_stopping_min_delta):
+            # Priority 1: Loss improved significantly - save model
             old_best_val_loss = best_val_loss
             best_val_loss = val_loss
             best_val_f1 = val_f1
             save_model = True
-            save_reason = (
-                f"Loss improved/stable: {val_loss:.4f} ≤ {old_best_val_loss:.4f}"
-            )
-        elif val_f1 > best_val_f1:
-            # Priority 2: Loss increased but F1 improved - still save
+            save_reason = f"Loss improved: {val_loss:.4f} < {old_best_val_loss:.4f} - {args.early_stopping_min_delta:.4f}"
+        elif val_f1 > (best_val_f1 + args.early_stopping_min_delta):
+            # Priority 2: F1 improved significantly - still save
             old_best_val_f1 = best_val_f1
             best_val_f1 = val_f1
             best_val_loss = val_loss
             save_model = True
-            save_reason = (
-                f"Loss increased but F1 improved: {val_f1:.4f} > {old_best_val_f1:.4f}"
-            )
+            save_reason = f"F1 improved: {val_f1:.4f} > {old_best_val_f1:.4f} + {args.early_stopping_min_delta:.4f}"
 
         if save_model:
             patience_counter = 0
@@ -772,14 +782,27 @@ def train(args, model: nn.Module):
             print(f"  ↳ Validation improved ({save_reason}). Saving best model!")
         else:
             patience_counter += 1
-            print(
-                f"  ↳ No improvement (Loss: {val_loss:.4f} > {best_val_loss:.4f}, F1: {val_f1:.4f} ≤ {best_val_f1:.4f}). "
-                f"Early stopping counter: {patience_counter}/{args.early_stopping_patience}"
-            )
+            if epoch < args.early_stopping_warmup:
+                print(
+                    f"  ↳ No improvement, but in warmup period ({epoch + 1}/{args.early_stopping_warmup}). "
+                    f"Patience counter: {patience_counter}/{args.early_stopping_patience} (early stopping disabled)"
+                )
+            else:
+                print(
+                    f"  ↳ No improvement (Loss: {val_loss:.4f} > {best_val_loss:.4f} - {args.early_stopping_min_delta:.4f}, "
+                    f"F1: {val_f1:.4f} ≤ {best_val_f1:.4f} + {args.early_stopping_min_delta:.4f}). "
+                    f"Early stopping counter: {patience_counter}/{args.early_stopping_patience}"
+                )
 
-        # Check for early stopping
-        if patience_counter >= args.early_stopping_patience:
-            print(f"\nEarly stopping triggered after {epoch + 1} epochs!")
+        # Check for early stopping (only after warmup period)
+        if (
+            epoch >= args.early_stopping_warmup
+            and patience_counter >= args.early_stopping_patience
+        ):
+            print(
+                f"\nEarly stopping triggered after {epoch + 1} epochs "
+                f"(warmup: {args.early_stopping_warmup}, patience: {args.early_stopping_patience})!"
+            )
             break
 
     print("\nTraining completed!")
