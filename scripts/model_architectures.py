@@ -8,6 +8,86 @@ import torch.nn.functional as F
 
 
 # ============================================================================
+# Squeeze-and-Excitation (SE) Module - Channel Attention
+# ============================================================================
+
+
+class SELayer(nn.Module):
+    """
+    Squeeze-and-Excitation Layer (Channel Attention).
+
+    Adaptively recalibrates channel-wise feature responses by explicitly
+    modeling interdependencies between channels.
+
+    Architecture:
+        1. Squeeze: Global Average Pooling (C×H×W → C×1×1)
+        2. Excitation:
+           - FC: C → C/r (dimensionality reduction)
+           - ReLU
+           - FC: C/r → C (dimensionality restoration)
+           - Sigmoid (gating mechanism)
+        3. Scale: Element-wise multiplication with input
+
+    Args:
+        channels: Number of input channels
+        reduction: Channel reduction ratio (default: 16)
+                   - reduction=16: Standard (recommended)
+                   - reduction=8: Stronger attention (more parameters)
+                   - reduction=32: Lighter attention (fewer parameters)
+
+    References:
+        Hu et al. "Squeeze-and-Excitation Networks" (CVPR 2018)
+        - ImageNet: ResNet-50 +1% Top-1 accuracy
+        - Parameters: +~2-3% (reduction=16)
+        - Computation: +~5% FLOPs
+
+    Example:
+        >>> se = SELayer(channels=128, reduction=16)
+        >>> x = torch.randn(32, 128, 32, 32)  # (B, C, H, W)
+        >>> out = se(x)  # Same shape: (32, 128, 32, 32)
+    """
+
+    def __init__(self, channels: int, reduction: int = 16) -> None:
+        super().__init__()
+
+        # Ensure reduction is valid
+        if channels < reduction:
+            reduction = max(1, channels // 2)
+
+        reduced_channels = max(channels // reduction, 1)
+
+        # Squeeze: Global spatial information → Channel descriptor
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # Excitation: Channel-wise gating mechanism
+        self.fc = nn.Sequential(
+            nn.Linear(channels, reduced_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reduced_channels, channels, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor of shape (B, C, H, W)
+
+        Returns:
+            Attention-weighted tensor of shape (B, C, H, W)
+        """
+        b, c, _, _ = x.size()
+
+        # Squeeze: C×H×W → C×1×1 → C
+        y = self.avg_pool(x).view(b, c)
+
+        # Excitation: C → C/r → C, Sigmoid gating
+        y = self.fc(y).view(b, c, 1, 1)
+
+        # Scale: Apply channel-wise attention
+        return x * y.expand_as(x)
+
+
+# ============================================================================
 # Stochastic Depth (DropPath) - Used by Wide ResNet
 # ============================================================================
 
@@ -873,7 +953,24 @@ def pyramidnet164_270(
 
 
 class WideBasicBlock(nn.Module):
-    """Wide ResNet basic residual block with pre-activation structure."""
+    """
+    Wide ResNet basic residual block with pre-activation structure.
+
+    Optionally includes Squeeze-and-Excitation (SE) attention mechanism.
+
+    Architecture:
+        Input → BN → ReLU → Conv3×3 → Dropout → BN → ReLU → Conv3×3
+        → [SE (optional)] → DropPath → Add(Shortcut) → Output
+
+    Args:
+        in_channels: Number of input channels
+        out_channels: Number of output channels
+        stride: Stride for first convolution (1 or 2)
+        dropout_rate: Dropout probability
+        drop_path_rate: Stochastic depth probability
+        use_se: Whether to use Squeeze-and-Excitation attention
+        se_reduction: SE reduction ratio (only used if use_se=True)
+    """
 
     def __init__(
         self,
@@ -882,6 +979,8 @@ class WideBasicBlock(nn.Module):
         stride: int,
         dropout_rate: float,
         drop_path_rate: float = 0.0,
+        use_se: bool = False,
+        se_reduction: int = 16,
     ) -> None:
         super().__init__()
 
@@ -899,6 +998,10 @@ class WideBasicBlock(nn.Module):
         self.conv2 = nn.Conv2d(
             out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
         )
+
+        # Squeeze-and-Excitation attention (optional)
+        self.se = SELayer(out_channels, se_reduction) if use_se else None
+
         self.drop_path = DropPath(drop_path_rate)
 
         self.shortcut = nn.Sequential()
@@ -911,6 +1014,11 @@ class WideBasicBlock(nn.Module):
         out = self.conv1(F.relu(self.bn1(x)))
         out = self.dropout(out)
         out = self.conv2(F.relu(self.bn2(out)))
+
+        # Apply SE attention if enabled
+        if self.se is not None:
+            out = self.se(out)
+
         out = self.drop_path(out)
         out = out + self.shortcut(x)
         return out
@@ -921,6 +1029,25 @@ class WideResNet(nn.Module):
     Wide Residual Network for CIFAR datasets.
 
     Achieved F1=0.8131 on CIFAR-100 with drop_path_rate=0.1 + RandAugment.
+
+    Supports Squeeze-and-Excitation (SE) attention mechanism for improved
+    feature recalibration and detail-sensitive classification.
+
+    Args:
+        depth: Network depth (must satisfy (depth-4) % 6 == 0)
+        widen_factor: Width multiplier
+        num_classes: Number of output classes
+        dropout_rate: Dropout probability
+        drop_path_rate: Stochastic depth probability
+        use_se: Whether to use SE attention in blocks
+        se_reduction: SE reduction ratio (default: 16)
+
+    Example:
+        >>> # Standard WRN-28-10
+        >>> model = WideResNet(28, 10, num_classes=100, dropout_rate=0.2)
+        >>>
+        >>> # WRN-28-10 with SE-Net
+        >>> model = WideResNet(28, 10, num_classes=100, dropout_rate=0.2, use_se=True)
     """
 
     def __init__(
@@ -930,6 +1057,8 @@ class WideResNet(nn.Module):
         num_classes: int = 100,
         dropout_rate: float = 0.3,
         drop_path_rate: float = 0.0,
+        use_se: bool = False,
+        se_reduction: int = 16,
     ) -> None:
         super().__init__()
 
@@ -944,6 +1073,10 @@ class WideResNet(nn.Module):
             i * drop_path_rate / (total_blocks - 1) if total_blocks > 1 else 0.0
             for i in range(total_blocks)
         ]
+
+        # Store SE configuration
+        self.use_se = use_se
+        self.se_reduction = se_reduction
 
         self.in_channels = n_channels[0]
         self.conv1 = nn.Conv2d(
@@ -999,6 +1132,8 @@ class WideResNet(nn.Module):
                     stride,
                     dropout_rate,
                     drop_path_rate=drop_rates[i],
+                    use_se=self.use_se,
+                    se_reduction=self.se_reduction,
                 )
             )
             self.in_channels = out_channels
@@ -1127,9 +1262,29 @@ def wide_resnet28_10(
     num_classes: int = 100,
     dropout_rate: float = 0.3,
     drop_path_rate: float = 0.0,
+    use_se: bool = False,
+    se_reduction: int = 16,
 ) -> WideResNet:
-    """Wide ResNet-28-10 for CIFAR (36.5M params). Best: F1=0.8131 with drop_path=0.1."""
-    return WideResNet(28, 10, num_classes, dropout_rate, drop_path_rate)
+    """
+    Wide ResNet-28-10 for CIFAR (36.5M params).
+
+    Best results:
+    - F1=0.8131 with drop_path=0.1 + RandAugment
+    - F1=0.81 with dropout=0.2, drop_path=0.0 (improved detail classes)
+
+    Args:
+        num_classes: Number of output classes
+        dropout_rate: Dropout probability (recommended: 0.2-0.3)
+        drop_path_rate: Stochastic depth probability (recommended: 0.0-0.1)
+        use_se: Whether to use SE attention (target: +1-2% F1)
+        se_reduction: SE reduction ratio (default: 16)
+
+    Returns:
+        WideResNet-28-10 model
+    """
+    return WideResNet(
+        28, 10, num_classes, dropout_rate, drop_path_rate, use_se, se_reduction
+    )
 
 
 def wide_resnet28_10_selfdistill(
@@ -1237,6 +1392,8 @@ def create_model(
     ] = "wide_resnet28_10",
     dropout_rate: float = 0.3,
     drop_path_rate: float = 0.0,
+    use_se: bool = False,
+    se_reduction: int = 16,
 ):
     """
     Create and initialize the model from scratch.
@@ -1287,6 +1444,8 @@ def create_model(
             num_classes=num_classes,
             dropout_rate=dropout_rate,
             drop_path_rate=drop_path_rate,
+            use_se=use_se,
+            se_reduction=se_reduction,
         )
     elif model_type == "wide_resnet28_10_selfdistill":
         model = wide_resnet28_10_selfdistill(

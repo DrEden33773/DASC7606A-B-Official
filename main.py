@@ -186,9 +186,28 @@ def parse_args():
         "--drop_path_rate",
         type=float,
         default=0.0,
-        help="Stochastic Depth (DropPath) rate for Wide ResNet (0.0=disabled, 0.1/0.0=best for WRN-28-10). "
-        "Randomly drops residual branches during training to reduce overfitting. "
-        "Achieved F1=0.8131 with drop_path=0.1/0.0. Only effective for Wide ResNet models.",
+        help="Stochastic Depth (DropPath) rate for Wide ResNet (0.0=disabled, 0.1/0.0=best for WRN-28-10). ",
+    )
+    parser.add_argument(
+        "--use_se",
+        action="store_true",
+        default=True,
+        help="Enable Squeeze-and-Excitation (SE) attention mechanism in Wide ResNet. "
+        "Adds channel-wise attention for improved feature recalibration. "
+        "Expected improvement: +1-2%% F1. Parameters increase: ~2-3%% (with reduction=16).",
+    )
+    parser.add_argument(
+        "--no_se",
+        dest="use_se",
+        action="store_false",
+        help="Disable Squeeze-and-Excitation (SE) attention mechanism",
+    )
+    parser.add_argument(
+        "--se_reduction",
+        type=int,
+        default=16,
+        help="SE-Net reduction ratio (only used if --use_se is enabled). "
+        "Options: 8 (stronger attention), 16 (standard, recommended), 32 (lighter attention).",
     )
     parser.add_argument(
         "--use_compile",
@@ -471,9 +490,11 @@ def build_model(args) -> nn.Module:
     else:
         num_classes = 100
 
+    se_status = f"SE-Net (r={args.se_reduction})" if args.use_se else "disabled"
     logger.info(
         f"Creating {args.model} model with {num_classes} classes, "
-        f"dropout={args.dropout}, device={args.device} (training from scratch)..."
+        f"dropout={args.dropout}, drop_path={args.drop_path_rate}, "
+        f"SE={se_status}, device={args.device} (training from scratch)..."
     )
 
     model = create_model(
@@ -482,6 +503,8 @@ def build_model(args) -> nn.Module:
         model_type=args.model,
         dropout_rate=args.dropout,
         drop_path_rate=args.drop_path_rate,
+        use_se=args.use_se,
+        se_reduction=args.se_reduction,
     )
 
     # Log model parameters
