@@ -1008,7 +1008,7 @@ def load_data(
     )
     print(f"Total images: {len(train_dataset) + len(val_dataset)}")
     print(f"Number of classes: {len(train_dataset.classes)}")
-    print(f"Class names: {train_dataset.classes}")
+    # print(f"Class names: {train_dataset.classes}")
     print(f"Training set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
 
@@ -1016,7 +1016,7 @@ def load_data(
     global class_names_2_idx
     class_names_2_idx = {name: idx for idx, name in enumerate(train_dataset.classes)}
     print(f"COUNT(class_names_2_idx): {len(class_names_2_idx)}")
-    print(f"Class names to indices: {class_names_2_idx}")
+    # print(f"Class names to indices: {class_names_2_idx}")
 
     # build detail_sensitive_classes
     global detail_sensitive_classes
