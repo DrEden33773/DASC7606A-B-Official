@@ -257,7 +257,16 @@ def parse_args():
         "--use_class_weights",
         action="store_true",
         default=False,
-        help="Use class weights to focus on hard classes (seal, lizard, otter, etc.)",
+        help="Use class weights to adjust focus on different classes",
+    )
+    parser.add_argument(
+        "--weight_strategy",
+        type=str,
+        choices=["uniform", "long_board"],
+        default="long_board",
+        help="Class weighting strategy. Options: "
+        "'uniform' (all weights=1.0), "
+        "'long_board' (focus on classes with most improvement potential, recommended)",
     )
 
     # Mixed precision training
@@ -606,6 +615,7 @@ def train(args, model: nn.Module):
         focal_gamma=args.focal_gamma,
         use_class_weights=args.use_class_weights,
         num_classes=num_classes,
+        weight_strategy=args.weight_strategy,
     )
 
     # Initialize EMA if enabled
@@ -844,6 +854,7 @@ def evaluate(args, model: nn.Module):
         focal_gamma=args.focal_gamma,
         use_class_weights=args.use_class_weights,
         num_classes=num_classes,
+        weight_strategy=args.weight_strategy,
     )
 
     # Evaluate the model

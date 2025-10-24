@@ -13,9 +13,59 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
+from scripts.data_download import CIFAR100Downloader
+
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 
 class_names_2_idx: dict[str, int] = {}
+
+# ============================================================================
+# Class Weighting Constants (Long-Board Strategy)
+# ============================================================================
+# Based on WRN-28-12 training results (F1=0.82)
+# Strategy: Focus model attention on classes with most improvement potential
+
+# Group A: Extreme high-score classes (F1 ≥ 0.93)
+# These are already near-perfect, reduce attention to avoid over-optimization
+extreme_high_score_classes: set[int] = set(
+    # sunflower: 0.96, lawn_mower: 0.95, wardrobe: 0.94, palm_tree: 0.93
+    # pickup_truck: 0.93, tank: 0.93
+)
+
+# Group B: High-score classes (F1 0.88-0.92)
+# Already performing well, maintain current attention
+high_score_classes: set[int] = set(
+    # bicycle: 0.92, orange: 0.91, road: 0.91, motorcycle: 0.91, rocket: 0.90
+    # skunk: 0.90, tractor: 0.90, castle: 0.89, aquarium_fish: 0.89, bottle: 0.89
+)
+
+# Group C: Mid-high score classes (F1 0.80-0.87)
+# Good performance but room for improvement, slightly increase attention
+mid_high_score_classes: set[int] = set(
+    # Includes: chimpanzee, lion, tiger, elephant, butterfly, etc. (0.80-0.88)
+)
+
+# Group D: Medium score classes (F1 0.70-0.79)
+# Significant improvement potential, greatly increase attention
+medium_score_classes: set[int] = set(
+    # beaver: 0.71, crocodile: 0.72, forest: 0.72, dolphin: 0.70, maple_tree: 0.70
+    # whale: 0.71, seal: 0.57, etc.
+)
+
+# Group E: Detail-sensitive low-score classes (Human + Small Animals)
+# F1 < 0.70 due to 32×32 resolution limit, keep normal weight (don't force)
+detail_sensitive_low_score: set[int] = set(
+    # boy: 0.46, girl: 0.57, man: 0.58, woman: 0.60, baby: 0.60
+    # otter: 0.56, seal: 0.57, shrew: 0.61, mouse: 0.59
+)
+
+# Group F: Other low-score classes (F1 < 0.70, non-detail-sensitive)
+# These can potentially improve with more attention
+other_low_score_classes: set[int] = set(
+    # lizard: 0.61, oak_tree: 0.67, willow_tree: 0.65, shark: 0.66, bowl: 0.62
+    # ray: 0.70, snake: 0.69, pine_tree: 0.72
+)
+# ============================================================================
 
 
 # ============================================================================
@@ -517,6 +567,308 @@ class ModelEMA:
             buffer.data = self.backup[name].clone()
 
         self.backup = {}
+
+
+def generate_class_weights(
+    num_classes: int,
+    strategy: str = "long_board",
+    device: str = "cpu",
+) -> torch.Tensor:
+    """
+    Generate class-specific loss weights based on the specified strategy.
+
+    The "long_board" strategy focuses model attention on classes with the most
+    improvement potential, while reducing attention on already near-perfect classes.
+    This implements the "long-board effect" optimization approach.
+
+    Args:
+        num_classes: Number of classes (typically 100 for CIFAR-100)
+        strategy: Weighting strategy. Options:
+            - "uniform": All classes have weight 1.0 (default behavior)
+            - "long_board": Long-board effect strategy (recommended)
+                * Extreme high-score (F1≥0.93): weight=0.75 (reduce attention)
+                * High-score (F1 0.88-0.92): weight=0.9 (slight reduction)
+                * Mid-high score (F1 0.80-0.87): weight=1.1 (slight increase)
+                * Medium score (F1 0.70-0.79): weight=1.6 (major increase)
+                * Detail-sensitive low (F1<0.70, humans/small animals): weight=1.0 (don't force)
+                * Other low-score (F1<0.70, others): weight=1.4 (increase)
+        device: Device to place the weight tensor on
+
+    Returns:
+        Tensor of shape [num_classes] with class-specific weights
+
+    Example::
+
+        # Generate long-board weights
+        class_weights = generate_class_weights(100, strategy="long_board", device="cuda")
+
+        # Use with CrossEntropyLoss
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+    Note:
+        The class assignments are based on WRN-28-12 performance analysis (F1=0.82).
+        The weights are designed to:
+        1. Prevent over-optimization of already excellent classes
+        2. Focus learning on classes with significant improvement potential
+        3. Respect the intrinsic difficulty of detail-sensitive classes
+    """
+    # Initialize all weights to 1.0
+    weights = torch.ones(num_classes, dtype=torch.float32)
+
+    if strategy == "uniform":
+        # All classes have equal weight
+        return weights.to(device)
+
+    elif strategy == "long_board":
+        # CIFAR-100 class name to index mapping (standard order)
+        cifar100_classes = CIFAR100Downloader.CLASS_NAMES
+
+        # Group A: Extreme high-score (F1 ≥ 0.93) - weight=0.75
+        extreme_high = {
+            "sunflower",
+            "lawn_mower",
+            "wardrobe",
+            "palm_tree",
+            "pickup_truck",
+            "tank",
+        }
+
+        # Group B: High-score (F1 0.88-0.92) - weight=0.9
+        high_score = {
+            "bicycle",
+            "orange",
+            "road",
+            "motorcycle",
+            "rocket",
+            "skunk",
+            "tractor",
+            "castle",
+            "aquarium_fish",
+            "bottle",
+            "chair",
+            "chimpanzee",
+            "butterfly",
+        }
+
+        # Group C: Mid-high score (F1 0.80-0.87) - weight=1.1
+        mid_high = {
+            "lion",
+            "tiger",
+            "elephant",
+            "camel",
+            "clock",
+            "cloud",
+            "cockroach",
+            "fox",
+            "hamster",
+            "kangaroo",
+            "keyboard",
+            "leopard",
+            "mushroom",
+            "plain",
+            "poppy",
+            "porcupine",
+            "raccoon",
+            "sea",
+            "spider",
+            "streetcar",
+            "television",
+            "train",
+            "trout",
+            "bed",
+            "bee",
+            "beetle",
+            "can",
+            "caterpillar",
+            "cattle",
+            "cup",
+            "dinosaur",
+            "house",
+            "mountain",
+            "orchid",
+            "pear",
+            "plate",
+            "rose",
+            "snail",
+            "sweet_pepper",
+            "table",
+            "telephone",
+            "tulip",
+            "turtle",
+            "wolf",
+            "worm",
+        }
+
+        # Group D: Medium score (F1 0.70-0.79) - weight=1.6
+        medium_score = {
+            "beaver",
+            "crocodile",
+            "forest",
+            "dolphin",
+            "maple_tree",
+            "whale",
+            "flatfish",
+            "lamp",
+            "lobster",
+            "pine_tree",
+            "possum",
+            "rabbit",
+            "squirrel",
+            "bear",
+            "bridge",
+            "bus",
+            "couch",
+            "crab",
+        }
+
+        # Group E: Detail-sensitive low-score (F1 < 0.70, humans/small animals) - weight=1.0
+        detail_sensitive = {
+            "boy",
+            "girl",
+            "man",
+            "woman",
+            "baby",
+            "otter",
+            "shrew",
+            "mouse",
+        }
+
+        # Group F: Other low-score (F1 < 0.70, non-detail-sensitive) - weight=1.4
+        other_low = {
+            "lizard",
+            "oak_tree",
+            "willow_tree",
+            "shark",
+            "bowl",
+            "ray",
+            "snake",
+            "seal",
+            "apple",
+            "porcupine",  # Added some edge cases
+        }
+
+        # Apply weights based on class membership
+        for idx, class_name in enumerate(cifar100_classes):
+            if class_name in extreme_high:
+                weights[idx] = 0.75
+            elif class_name in high_score:
+                weights[idx] = 0.9
+            elif class_name in mid_high:
+                weights[idx] = 1.1
+            elif class_name in medium_score:
+                weights[idx] = 1.6
+            elif class_name in detail_sensitive:
+                weights[idx] = 1.0
+            elif class_name in other_low:
+                weights[idx] = 1.4
+            # else: default weight=1.0
+
+        return weights.to(device)
+
+    else:
+        raise ValueError(
+            f"Unknown weight strategy: {strategy}. "
+            f"Supported strategies: 'uniform', 'long_board'"
+        )
+
+
+class WeightedLossWrapper(nn.Module):
+    """
+    Wrapper for loss functions to support class-specific weights.
+
+    This wrapper allows applying different weights to different classes,
+    which is useful for implementing the "long-board effect" optimization.
+
+    Args:
+        base_criterion: The base loss function (e.g., nn.CrossEntropyLoss)
+        class_weights: Tensor of shape [num_classes] with class-specific weights
+        mixup_mode: How to handle mixup/cutmix scenarios:
+            - "weighted_avg": Apply weighted average of weights for mixed samples
+            - "max": Use maximum weight of the two mixed classes
+            - "min": Use minimum weight of the two mixed classes
+
+    Example::
+
+        # Create weighted loss
+        class_weights = generate_class_weights(100, strategy="long_board")
+        base_criterion = nn.CrossEntropyLoss(reduction='none')  # Important: reduction='none'
+        criterion = WeightedLossWrapper(base_criterion, class_weights)
+
+        # Use in training
+        loss = criterion(outputs, labels)
+
+        # With mixup/cutmix
+        loss = criterion(outputs, targets_a, targets_b, lam=0.7)
+    """
+
+    def __init__(
+        self,
+        base_criterion: nn.Module,
+        class_weights: torch.Tensor,
+        mixup_mode: str = "weighted_avg",
+    ):
+        super().__init__()
+        self.base_criterion = base_criterion
+        self.register_buffer("class_weights", class_weights)
+        self.mixup_mode = mixup_mode
+        # Type annotation for self.class_weights (registered as buffer)
+        self.class_weights: torch.Tensor
+
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets_a: torch.Tensor,
+        targets_b: Optional[torch.Tensor] = None,
+        lam: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        Compute weighted loss.
+
+        Args:
+            outputs: Model predictions [batch_size, num_classes]
+            targets_a: Primary targets [batch_size]
+            targets_b: Secondary targets for mixup/cutmix [batch_size] (optional)
+            lam: Mixup lambda value (1.0 = no mixup)
+
+        Returns:
+            Scalar loss value
+        """
+        if targets_b is None or lam >= 0.999:
+            # No mixup/cutmix, standard weighted loss
+            # Compute per-sample loss
+            loss_per_sample = self.base_criterion(outputs, targets_a)
+
+            # Apply class-specific weights
+            weights = self.class_weights[targets_a]
+            weighted_loss = loss_per_sample * weights
+
+            return weighted_loss.mean()
+
+        else:
+            # Mixup/CutMix: compute loss for both targets
+            loss_a = self.base_criterion(outputs, targets_a)
+            loss_b = self.base_criterion(outputs, targets_b)
+
+            # Get weights for both classes
+            weights_a = self.class_weights[targets_a]
+            weights_b = self.class_weights[targets_b]
+
+            # Combine weights based on mixup_mode
+            if self.mixup_mode == "weighted_avg":
+                # Weight by lambda (same as loss mixing)
+                combined_weights = lam * weights_a + (1 - lam) * weights_b
+            elif self.mixup_mode == "max":
+                combined_weights = torch.maximum(weights_a, weights_b)
+            elif self.mixup_mode == "min":
+                combined_weights = torch.minimum(weights_a, weights_b)
+            else:
+                combined_weights = (weights_a + weights_b) / 2
+
+            # Apply combined loss
+            combined_loss = lam * loss_a + (1 - lam) * loss_b
+            weighted_loss = combined_loss * combined_weights
+
+            return weighted_loss.mean()
 
 
 class AlbumentationsTransform:
@@ -1085,6 +1437,7 @@ def define_loss_and_optimizer(
     focal_gamma: float = 2.0,
     use_class_weights: bool = False,
     num_classes: int = 100,
+    weight_strategy: str = "uniform",
 ) -> Tuple[nn.Module, optim.Optimizer, optim.lr_scheduler.LRScheduler]:
     """
     Define the loss function, optimizer, and learning rate scheduler.
@@ -1124,59 +1477,32 @@ def define_loss_and_optimizer(
     Raises:
         ValueError: If optimizer_type or scheduler_type is not recognized
     """
-    # Compute class weights for hard examples (based on empirical difficulty)
+    # Compute class weights based on strategy
     class_weights = None
     if use_class_weights:
-        # Hard-coded weights for difficult CIFAR-100 classes
-        # Base weight = 1.0, increase for consistently low-performing classes
-        weights = torch.ones(num_classes)
-
-        global class_names_2_idx
-        # Define hard class indices (0-indexed, alphabetically sorted CIFAR-100 classes)
-        # IMPORTANT: Indices are based on alphabetically sorted class names!
-        # Updated based on latest training_metrics.txt (Mixup-CE-OptArgs run)
-        #
-        # Very hard classes (F1 < 0.50): weight=3.0
-        #   girl(F1=0.42), seal(F1=0.43), otter(F1=0.45),
-        #   shrew(F1=0.48), lizard(F1=0.50), boy(F1=0.50)
-        very_hard_classes = [
-            class_names_2_idx["girl"],
-            class_names_2_idx["seal"],
-            class_names_2_idx["otter"],
-            class_names_2_idx["shrew"],
-            class_names_2_idx["lizard"],
-            class_names_2_idx["boy"],
-        ]  # weight = 3.0
-
-        # Hard classes (0.50 <= F1 < 0.60): weight=2.0
-        #   mouse(F1=0.52), squirrel(F1=0.52), lobster(F1=0.53),
-        #   man(F1=0.54), woman(F1=0.54), rabbit(F1=0.54),
-        #   bear(F1=0.55), beaver(F1=0.55), possum(F1=0.56)
-        hard_classes = [
-            class_names_2_idx["mouse"],
-            class_names_2_idx["squirrel"],
-            class_names_2_idx["lobster"],
-            class_names_2_idx["man"],
-            class_names_2_idx["woman"],
-            class_names_2_idx["rabbit"],
-            class_names_2_idx["bear"],
-            class_names_2_idx["beaver"],
-            class_names_2_idx["possum"],
-        ]  # weight = 2.0
-
-        for idx in very_hard_classes:
-            if idx < num_classes:
-                weights[idx] = 3.0
-        for idx in hard_classes:
-            if idx < num_classes:
-                weights[idx] = 2.0
-
-        class_weights = weights.to(next(model.parameters()).device)
-        print(
-            f"Using class weights (for training / validation):\n\tvery_hard={very_hard_classes[:3]}... (3.0x), hard={hard_classes[:3]}... (2.0x)"
+        device_obj = next(model.parameters()).device
+        device_str = str(device_obj)
+        class_weights = generate_class_weights(
+            num_classes=num_classes,
+            strategy=weight_strategy,
+            device=device_str,
         )
 
+        if weight_strategy == "long_board":
+            print("✅ Using LONG-BOARD class weighting strategy:")
+            print("   • Extreme high-score (F1≥0.93): weight=0.75 (reduce attention)")
+            print("   • High-score (F1 0.88-0.92): weight=0.9 (slight reduction)")
+            print("   • Mid-high score (F1 0.80-0.87): weight=1.1 (slight increase)")
+            print("   • Medium score (F1 0.70-0.79): weight=1.6 (major increase)")
+            print("   • Detail-sensitive low (<0.70): weight=1.0 (don't force)")
+            print("   • Other low-score (<0.70): weight=1.4 (increase)")
+            print("   Strategy: Focus on classes with most improvement potential!")
+        else:
+            print(f"Using class weights with strategy: {weight_strategy}")
+
     # Define loss function
+    criterion: nn.Module  # Type annotation to avoid "possibly unbound" warning
+
     if loss_type == "focal":
         # Focal Loss for addressing class imbalance and hard examples
         criterion = FocalLoss(alpha=class_weights, gamma=focal_gamma)
@@ -1188,10 +1514,56 @@ def define_loss_and_optimizer(
             label_smoothing = 0.0
             print("    Label smoothing was set to 0.0!")
     elif loss_type == "ce":
-        # Standard CrossEntropyLoss with optional label smoothing
-        if label_smoothing > 0.0:
+        # Standard CrossEntropyLoss with optional label smoothing and class weights
+        if label_smoothing > 0.0 and not (
+            use_class_weights and weight_strategy == "long_board"
+        ):
+            # Use label smoothing (not compatible with long_board)
             criterion = LabelSmoothingCrossEntropy(smoothing=label_smoothing)
+        elif (
+            label_smoothing > 0.0
+            and use_class_weights
+            and weight_strategy == "long_board"
+        ):
+            # long_board is not compatible with label smoothing
+            print(
+                f"Warning: Label smoothing ({label_smoothing}) is not compatible "
+                f"with WeightedLossWrapper for long_board strategy. Disabling label smoothing."
+            )
+            label_smoothing = 0.0
+            # Fall through to use WeightedLossWrapper or standard CE
+            if class_weights is not None:
+                base_criterion = nn.CrossEntropyLoss(reduction="none")
+                criterion = WeightedLossWrapper(
+                    base_criterion=base_criterion,
+                    class_weights=class_weights,
+                    mixup_mode="weighted_avg",
+                )
+                print(
+                    "   Using WeightedLossWrapper for optimal long-board effect with mixup/cutmix"
+                )
+            else:
+                criterion = nn.CrossEntropyLoss()
+        elif (
+            use_class_weights
+            and weight_strategy == "long_board"
+            and class_weights is not None
+        ):
+            # For long_board strategy with class weights, use WeightedLossWrapper
+            # This provides better handling of mixup/cutmix scenarios
+            base_criterion = nn.CrossEntropyLoss(
+                reduction="none"
+            )  # Important: reduction='none'
+            criterion = WeightedLossWrapper(
+                base_criterion=base_criterion,
+                class_weights=class_weights,
+                mixup_mode="weighted_avg",  # Weight by lambda, same as loss mixing
+            )
+            print(
+                "   Using WeightedLossWrapper for optimal long-board effect with mixup/cutmix"
+            )
         else:
+            # Standard CrossEntropyLoss with optional class weights
             criterion = nn.CrossEntropyLoss(weight=class_weights)
     else:
         raise ValueError(
@@ -1390,11 +1762,19 @@ def train_epoch(
                     # Normal training
                     outputs = model(inputs)
                     if (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0:
-                        loss = mixup_criterion(
-                            criterion, outputs, targets_a, targets_b, lam
-                        )
+                        # Check if using WeightedLossWrapper (supports mixup/cutmix natively)
+                        if isinstance(criterion, WeightedLossWrapper):
+                            loss = criterion(outputs, targets_a, targets_b, lam)
+                        else:
+                            loss = mixup_criterion(
+                                criterion, outputs, targets_a, targets_b, lam
+                            )
                     else:
-                        loss = criterion(outputs, labels)
+                        # No mixup/cutmix
+                        if isinstance(criterion, WeightedLossWrapper):
+                            loss = criterion(outputs, labels, None, 1.0)
+                        else:
+                            loss = criterion(outputs, labels)
         else:
             # Self-distillation: get all classifier outputs
             if use_self_distill:
@@ -1416,11 +1796,19 @@ def train_epoch(
                 # Normal training
                 outputs = model(inputs)
                 if (use_cutmix and cutmix_alpha > 0) or mixup_alpha > 0:
-                    loss = mixup_criterion(
-                        criterion, outputs, targets_a, targets_b, lam
-                    )
+                    # Check if using WeightedLossWrapper (supports mixup/cutmix natively)
+                    if isinstance(criterion, WeightedLossWrapper):
+                        loss = criterion(outputs, targets_a, targets_b, lam)
+                    else:
+                        loss = mixup_criterion(
+                            criterion, outputs, targets_a, targets_b, lam
+                        )
                 else:
-                    loss = criterion(outputs, labels)
+                    # No mixup/cutmix
+                    if isinstance(criterion, WeightedLossWrapper):
+                        loss = criterion(outputs, labels, None, 1.0)
+                    else:
+                        loss = criterion(outputs, labels)
 
         # Backward pass and optimize
         if use_amp and scaler:
