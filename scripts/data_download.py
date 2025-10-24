@@ -440,7 +440,8 @@ class CIFAR100Downloader:
         total = len(train_dataset) + len(test_dataset)
         separator = "=" * 50
 
-        logger.info("\n" + separator)
+        logger.info("")
+        logger.info(separator)
         logger.info("✅ CIFAR-100 Dataset Loaded Successfully!")
         logger.info(separator)
         logger.info("📊 Dataset Statistics:")
