@@ -1227,9 +1227,9 @@ class SEBlock(nn.Module):
         self.squeeze = nn.AdaptiveAvgPool2d(1)
         reduced_channels = max(1, channels // reduction)
         self.excitation = nn.Sequential(
-            nn.Linear(channels, reduced_channels, bias=False),
+            nn.Linear(channels, reduced_channels, bias=True),  # Fix: use bias=True
             Swish(),
-            nn.Linear(reduced_channels, channels, bias=False),
+            nn.Linear(reduced_channels, channels, bias=True),  # Fix: use bias=True
             nn.Sigmoid(),
         )
 
@@ -1476,9 +1476,10 @@ class EfficientNet(nn.Module):
         return int(math.ceil(depth_mult * repeats))
 
     def _initialize_weights(self) -> None:
-        """Initialize model weights using He initialization."""
+        """Initialize model weights (adapted for Swish activation function)."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
+                # Fix: Swish is similar to ReLU, but standard init is safer
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
@@ -1486,8 +1487,11 @@ class EfficientNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
+                # Fix: SE Block Linear layers need more reasonable initialization
+                # Use Xavier uniform (Glorot) initialization
+                nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
+                    # Don't set positive bias, let model learn it
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

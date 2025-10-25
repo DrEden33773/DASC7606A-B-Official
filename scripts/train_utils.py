@@ -1704,6 +1704,7 @@ def train_epoch(
     use_amp: bool = False,
     max_grad_norm: Optional[float] = None,
     ema: Optional[ModelEMA] = None,
+    ema_model: Optional[nn.Module] = None,
     mixup_alpha: float = 0.0,
     cutmix_alpha: float = 0.0,
     use_cutmix: bool = False,
@@ -1884,9 +1885,9 @@ def train_epoch(
         ):
             scheduler.step()
 
-        # Update EMA if enabled
+        # Update EMA if enabled (use ema_model if provided, otherwise model)
         if ema is not None:
-            ema.update(model)
+            ema.update(ema_model if ema_model is not None else model)
 
         # Statistics
         running_loss += loss.item() * inputs.size(0)
@@ -1941,6 +1942,12 @@ def validate_epoch(
     all_predictions = []
     all_labels = []
 
+    # use non-weighted strategy for evaluation
+    if isinstance(criterion, WeightedLossWrapper):
+        eval_criterion = nn.CrossEntropyLoss()
+    else:
+        eval_criterion = criterion
+
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc="Validation", leave=False)
 
@@ -1949,8 +1956,7 @@ def validate_epoch(
 
             # Forward pass
             outputs = model(inputs)
-            # loss = eval_criterion(outputs, labels)
-            loss = criterion(outputs, labels)
+            loss = eval_criterion(outputs, labels)
 
             # Statistics
             running_loss += loss.item() * inputs.size(0)

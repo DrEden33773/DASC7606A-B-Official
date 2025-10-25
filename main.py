@@ -5,7 +5,7 @@ import argparse
 import logging
 import os
 import random
-from typing import cast
+from typing import Tuple, cast
 
 import numpy as np
 import torch
@@ -290,7 +290,7 @@ def parse_args():
         "--weight_strategy",
         type=str,
         choices=["uniform", "long_board", "long_board_v2", "long_board_v2.5"],
-        default="uniform",  # long_board
+        default="long_board",
         help="Class weighting strategy. Options: "
         "'uniform' (all weights=1.0), "
         "'long_board' (conservative, weight range 0.75-1.6), "
@@ -514,8 +514,15 @@ def augment_data(args):
     return augmented_data_dir
 
 
-def build_model(args) -> nn.Module:
-    """Build the model (from scratch)"""
+def build_model(args) -> Tuple[nn.Module, nn.Module]:
+    """
+    Build the model (from scratch).
+
+    Returns:
+        Tuple of (compiled_model, original_model)
+        - compiled_model: Used for training (may be torch.compile wrapper)
+        - original_model: Used for EMA updates and validation
+    """
     if args.dataset == "cifar10":
         num_classes = 10
     else:
@@ -541,6 +548,10 @@ def build_model(args) -> nn.Module:
     logger.info(
         f"Model parameters: {total_params / 1e6:.2f}M total, {trainable_params / 1e6:.2f}M trainable"
     )
+
+    # Store original model reference before compilation (needed for EMA)
+    # torch.compile() creates a wrapper that may interfere with EMA's parameter access
+    original_model = model
 
     # Apply torch.compile() for performance optimization (PyTorch 2.0+)
     if hasattr(torch, "compile") and args.use_compile:
@@ -591,14 +602,16 @@ def build_model(args) -> nn.Module:
             logger.info(
                 "   Expected speedup: 3-8%% (aot_eager), 5-15%% (inductor with Triton)"
             )
+            logger.info("   Note: EMA will use original model (not compiled wrapper)")
         except Exception as e:
             logger.warning(f"⚠️  torch.compile() failed: {e}")
             logger.warning("   Falling back to eager mode (no compilation)")
 
-    return model
+    # Return both compiled model (for training) and original model (for EMA)
+    return model, original_model
 
 
-def train(args, model: nn.Module):
+def train(args, model: nn.Module, original_model: nn.Module):
     # Disable `label-smoothing` while using `CutMix` or `Mixup`
     if (args.use_cutmix and args.cutmix_alpha > 0) or args.mixup_alpha > 0:
         args.label_smoothing = 0.0
@@ -661,11 +674,12 @@ def train(args, model: nn.Module):
         weight_strategy=args.weight_strategy,
     )
 
-    # Initialize EMA if enabled
+    # Initialize EMA if enabled (use original_model, not compiled wrapper)
     ema = None
     if args.use_ema:
-        ema = ModelEMA(model, decay=args.ema_decay, device=args.device)
+        ema = ModelEMA(original_model, decay=args.ema_decay, device=args.device)
         logger.info(f"EMA enabled with decay={args.ema_decay}")
+        logger.info("   EMA uses original model (torch.compile wrapper is bypassed)")
 
     # Initialize tracking variables
     best_val_loss = float("inf")
@@ -716,6 +730,7 @@ def train(args, model: nn.Module):
             use_amp=args.use_amp,
             max_grad_norm=args.max_grad_norm if args.max_grad_norm > 0 else None,
             ema=ema,
+            ema_model=original_model if ema is not None else None,
             mixup_alpha=args.mixup_alpha,
             cutmix_alpha=args.cutmix_alpha,
             use_cutmix=args.use_cutmix,
@@ -725,13 +740,15 @@ def train(args, model: nn.Module):
         )
 
         # Validate the model (use EMA weights if enabled)
+        # Important: Validate on original_model (not compiled wrapper) when using EMA
+        validation_model = original_model if ema is not None else model
         if ema is not None:
-            ema.apply_shadow()
+            ema.apply_shadow()  # Apply EMA weights to original_model
         val_loss, val_acc, val_f1 = validate_epoch(
-            model, val_loader, criterion, args.device
+            validation_model, val_loader, criterion, args.device
         )
         if ema is not None:
-            ema.restore()
+            ema.restore()  # Restore original weights
 
         # Update learning rate based on scheduler type
         if args.scheduler == "plateau":
@@ -962,9 +979,9 @@ def standard_main(args):
         augment_data(args)
 
     # Build model
-    model = build_model(args)
-    # Train
-    train(args, model)
+    model, original_model = build_model(args)
+    # Train (use both compiled and original models)
+    train(args, model, original_model)
     # Evaluate
     evaluate(args, model)
 
@@ -1006,8 +1023,8 @@ def ensemble_main(args):
         args.output_dir = model_output_dir
 
         # Build and train model
-        model = build_model(args)
-        train(args, model)
+        model, original_model = build_model(args)
+        train(args, model, original_model)
 
         # Keep the trained model (already loaded with best weights from train())
         trained_model_list.append(model)
