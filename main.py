@@ -167,14 +167,12 @@ def parse_args():
             "wide_resnet28_12",
             "pyramidnet110_270",
             "pyramidnet164_270",
-            "convnext_tiny",
-            "convnext_small",
         ],
         default="wide_resnet28_12",  # f1 = 0.82
         help="Model architecture (all from scratch). "
         "Phase 1: wide_resnet28_10 (36.5M, F1=0.8131). "
         "Phase 2.7: pyramidnet110_270 (26M, paper: 83%%, target F1≥0.85). "
-        "Others: resnet34/50, wide_resnet*, pyramidnet164, convnext, selfdistill.",
+        "Others: resnet34/50, wide_resnet*, pyramidnet164, selfdistill.",
     )
     parser.add_argument(
         "--dropout",

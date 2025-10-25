@@ -404,210 +404,6 @@ def resnet50_cifar(num_classes: int = 10, dropout_rate: float = 0.3) -> ResNetCI
 
 
 # ============================================================================
-# ConvNeXt - Modern CNN Architecture (Phase 2)
-# ============================================================================
-
-
-class LayerNorm2d(nn.Module):
-    """LayerNorm for channels_first format (NCHW)."""
-
-    def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(num_channels))
-        self.bias = nn.Parameter(torch.zeros(num_channels))
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        u = x.mean(1, keepdim=True)
-        s = (x - u).pow(2).mean(1, keepdim=True)
-        x = (x - u) / torch.sqrt(s + self.eps)
-        x = self.weight[:, None, None] * x + self.bias[:, None, None]
-        return x
-
-
-class ConvNeXtBlock(nn.Module):
-    """
-    ConvNeXt Block: DWConv → LayerNorm → PWConv → GELU → PWConv → LayerScale
-
-    Args:
-        dim: Number of input/output channels
-        drop_path: Stochastic depth rate
-        layer_scale_init: Initial value for layer scale
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        drop_path: float = 0.0,
-        layer_scale_init: float = 1e-6,
-    ) -> None:
-        super().__init__()
-
-        # Depthwise conv 7×7
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
-        self.norm = LayerNorm2d(dim)
-        # Pointwise/1×1 convs (implemented as Linear for efficiency)
-        self.pwconv1 = nn.Linear(dim, 4 * dim)
-        self.act = nn.GELU()
-        self.pwconv2 = nn.Linear(4 * dim, dim)
-        # Layer Scale
-        self.gamma = nn.Parameter(
-            layer_scale_init * torch.ones(dim), requires_grad=True
-        )
-        self.drop_path = DropPath(drop_path)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        shortcut = x
-
-        # Depthwise conv
-        x = self.dwconv(x)
-        # LayerNorm (channels first)
-        x = self.norm(x)
-
-        # Permute to NHWC for Linear layers
-        x = x.permute(0, 2, 3, 1)  # NCHW → NHWC
-
-        # PWConv (as Linear)
-        x = self.pwconv1(x)
-        x = self.act(x)
-        x = self.pwconv2(x)
-
-        # Layer Scale
-        x = self.gamma * x
-
-        # Permute back to NCHW
-        x = x.permute(0, 3, 1, 2)  # NHWC → NCHW
-
-        # Drop path + residual
-        x = shortcut + self.drop_path(x)
-
-        return x
-
-
-class ConvNeXt(nn.Module):
-    """
-    ConvNeXt architecture adapted for CIFAR datasets (32×32).
-
-    Modern CNN that achieves ViT-level performance with pure convolutions.
-
-    Args:
-        in_chans: Number of input channels (3 for RGB)
-        num_classes: Number of output classes
-        depths: Number of blocks in each stage
-        dims: Number of channels in each stage
-        drop_path_rate: Stochastic depth rate
-        layer_scale_init: Initial value for layer scale
-    """
-
-    def __init__(
-        self,
-        in_chans: int = 3,
-        num_classes: int = 100,
-        depths: List[int] = [3, 3, 9, 3],
-        dims: List[int] = [96, 192, 384, 768],
-        drop_path_rate: float = 0.0,
-        layer_scale_init: float = 1e-6,
-    ) -> None:
-        super().__init__()
-
-        # Stem: adapted for CIFAR (32×32 instead of 224×224)
-        # Original: 4×4 conv stride=4 → 56×56
-        # CIFAR: 3×3 conv stride=1 → 32×32 (preserve resolution)
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_chans, dims[0], kernel_size=3, stride=1, padding=1),
-            LayerNorm2d(dims[0]),
-        )
-
-        # Build stages with stochastic depth
-        self.stages = nn.ModuleList()
-        dp_rates = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
-
-        cur = 0
-        for i in range(4):
-            # Downsample layer (except first stage)
-            if i > 0:
-                downsample = nn.Sequential(
-                    LayerNorm2d(dims[i - 1]),
-                    nn.Conv2d(dims[i - 1], dims[i], kernel_size=2, stride=2),
-                )
-            else:
-                downsample = nn.Identity()
-
-            # ConvNeXt blocks
-            blocks = []
-            for j in range(depths[i]):
-                blocks.append(
-                    ConvNeXtBlock(
-                        dim=dims[i],
-                        drop_path=dp_rates[cur + j],
-                        layer_scale_init=layer_scale_init,
-                    )
-                )
-
-            stage = nn.Sequential(downsample, *blocks)
-            self.stages.append(stage)
-            cur += depths[i]
-
-        # Head
-        self.norm = LayerNorm2d(dims[-1])
-        self.head = nn.Linear(dims[-1], num_classes)
-
-        # Initialize weights
-        self._initialize_weights()
-
-    def _initialize_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear)):
-                nn.init.trunc_normal_(m.weight, std=0.02)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.stem(x)
-
-        for stage in self.stages:
-            x = stage(x)
-
-        # Global average pooling
-        x = self.norm(x)
-        x = x.mean([-2, -1])  # GAP
-
-        x = self.head(x)
-        return x
-
-
-def convnext_tiny(
-    num_classes: int = 100,
-    drop_path_rate: float = 0.1,
-) -> ConvNeXt:
-    """
-    ConvNeXt-Tiny for CIFAR (28M params).
-
-    Architecture: depths=[3,3,9,3], dims=[96,192,384,768]
-    Target: F1 ≥ 0.83 (Phase 2 goal)
-    """
-    return ConvNeXt(
-        num_classes=num_classes,
-        depths=[3, 3, 9, 3],
-        dims=[96, 192, 384, 768],
-        drop_path_rate=drop_path_rate,
-    )
-
-
-def convnext_small(
-    num_classes: int = 100,
-    drop_path_rate: float = 0.3,
-) -> ConvNeXt:
-    """ConvNeXt-Small for CIFAR (50M params). Phase 3 option."""
-    return ConvNeXt(
-        num_classes=num_classes,
-        depths=[3, 3, 27, 3],
-        dims=[96, 192, 384, 768],
-        drop_path_rate=drop_path_rate,
-    )
-
-
-# ============================================================================
 # PyramidNet - Deep Pyramidal Residual Networks (Phase 2.7)
 # ============================================================================
 
@@ -1232,8 +1028,6 @@ def create_model(
         "wide_resnet28_12",
         "pyramidnet110_270",
         "pyramidnet164_270",
-        "convnext_tiny",
-        "convnext_small",
     ] = "wide_resnet28_10",
     dropout_rate: float = 0.3,
     drop_path_rate: float = 0.0,
@@ -1260,12 +1054,10 @@ def create_model(
             Others:
             - "wide_resnet40_10": WRN-40-10 (55.8M params)
             - "wide_resnet28_12": WRN-28-12 (52.8M params, F1=0.80)
-            - "convnext_tiny": ConvNeXt-Tiny (28M params, F1=0.79)
-            - "convnext_small": ConvNeXt-Small (50M params)
             - "resnet34": ResNet-34 (21M params, F1=0.77)
             - "resnet50": ResNet-50 (23.5M params, F1=0.77)
-        dropout_rate: Dropout rate (only for ResNet/Wide ResNet, ignored by ConvNeXt)
-        drop_path_rate: Stochastic depth rate (best: 0.1 for WRN/ConvNeXt-Tiny)
+        dropout_rate: Dropout rate (only for ResNet/Wide ResNet)
+        drop_path_rate: Stochastic depth rate (best: 0.1 for WRN)
 
     Returns:
         Model instance moved to the specified device
@@ -1274,8 +1066,8 @@ def create_model(
         >>> # Phase 1 best (F1=0.8131)
         >>> model = create_model(100, 'cuda', 'wide_resnet28_10', drop_path_rate=0.1)
         >>>
-        >>> # Phase 2 target
-        >>> model = create_model(100, 'cuda', 'convnext_tiny', drop_path_rate=0.1)
+        >>> # Phase 2.7 target
+        >>> model = create_model(100, 'cuda', 'pyramidnet110_270', drop_path_rate=0.15)
     """
     # Create model from scratch
     if model_type == "resnet34":
@@ -1316,24 +1108,13 @@ def create_model(
             num_classes=num_classes,
             drop_path_rate=drop_path_rate,
         )
-    elif model_type == "convnext_tiny":
-        model = convnext_tiny(
-            num_classes=num_classes,
-            drop_path_rate=drop_path_rate,
-        )
-    elif model_type == "convnext_small":
-        model = convnext_small(
-            num_classes=num_classes,
-            drop_path_rate=drop_path_rate,
-        )
     else:
         raise ValueError(
             f"Unknown model_type: {model_type}. "
             f"Available options: 'resnet34', 'resnet50', "
             f"'wide_resnet28_10', 'wide_resnet28_10_selfdistill', "
             f"'wide_resnet40_10', 'wide_resnet28_12', "
-            f"'pyramidnet110_270', 'pyramidnet164_270', "
-            f"'convnext_tiny', 'convnext_small'"
+            f"'pyramidnet110_270', 'pyramidnet164_270'"
         )
 
     model = model.to(device)
