@@ -269,7 +269,7 @@ def parse_args():
         "--weight_strategy",
         type=str,
         choices=["uniform", "long_board", "long_board_v2", "long_board_v2.5"],
-        default="long_board_v2.5",
+        default="long_board",
         help="Class weighting strategy. Options: "
         "'uniform' (all weights=1.0), "
         "'long_board' (conservative, weight range 0.75-1.6), "
