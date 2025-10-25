@@ -1941,12 +1941,6 @@ def validate_epoch(
     all_predictions = []
     all_labels = []
 
-    # use non-weighted strategy for evaluation
-    if isinstance(criterion, WeightedLossWrapper):
-        eval_criterion = nn.CrossEntropyLoss()
-    else:
-        eval_criterion = criterion
-
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc="Validation", leave=False)
 
@@ -1955,7 +1949,8 @@ def validate_epoch(
 
             # Forward pass
             outputs = model(inputs)
-            loss = eval_criterion(outputs, labels)
+            # loss = eval_criterion(outputs, labels)
+            loss = criterion(outputs, labels)
 
             # Statistics
             running_loss += loss.item() * inputs.size(0)
