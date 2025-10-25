@@ -894,7 +894,7 @@ def evaluate(args, model: nn.Module):
         all_labels, all_preds, target_names=test_dataset.classes
     )
 
-    save_metrics(metrics=metrics_str)
+    save_metrics(metrics=str(metrics_str))
 
 
 def main():
