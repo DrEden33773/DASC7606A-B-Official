@@ -167,11 +167,13 @@ def parse_args():
             "wide_resnet28_12",
             "pyramidnet110_270",
             "pyramidnet164_270",
+            "efficientnet_b0",
         ],
-        default="wide_resnet28_12",  # f1 = 0.82
+        default="efficientnet_b0",  # Phase 3 target: F1 ≥ 0.85
         help="Model architecture (all from scratch). "
+        "Phase 3: efficientnet_b0 (5.3M, 64×64, target F1≥0.85) ← Recommended. "
         "Phase 1: wide_resnet28_10 (36.5M, F1=0.8131). "
-        "Phase 2.7: pyramidnet110_270 (26M, paper: 83%%, target F1≥0.85). "
+        "Phase 2.7: pyramidnet110_270 (26M, paper: 83%%). "
         "Others: resnet34/50, wide_resnet*, pyramidnet164, selfdistill.",
     )
     parser.add_argument(
@@ -183,10 +185,19 @@ def parse_args():
     parser.add_argument(
         "--drop_path_rate",
         type=float,
-        default=0.0,
-        help="Stochastic Depth (DropPath) rate for Wide ResNet (0.0=disabled, 0.1/0.0=best for WRN-28-10). "
-        "Randomly drops residual branches during training to reduce overfitting. "
-        "Achieved F1=0.8131 with drop_path=0.1/0.0. Only effective for Wide ResNet models.",
+        default=0.2,
+        help="Stochastic Depth (DropPath) rate. "
+        "Recommended: 0.1 for WRN, 0.2 for EfficientNet, 0.15 for PyramidNet. "
+        "Randomly drops residual branches during training to reduce overfitting.",
+    )
+    parser.add_argument(
+        "--input_size",
+        type=int,
+        default=64,
+        help="Input image size (32, 64, or 96). "
+        "CIFAR images will be resized to this size. "
+        "Recommended: 64 for EfficientNet (target F1≥0.85), 32 for other models. "
+        "Larger = better detail (esp. for human classes), slower training.",
     )
     parser.add_argument(
         "--use_compile",
@@ -509,6 +520,7 @@ def build_model(args) -> nn.Module:
         model_type=args.model,
         dropout_rate=args.dropout,
         drop_path_rate=args.drop_path_rate,
+        input_size=args.input_size,
     )
 
     # Log model parameters
@@ -612,6 +624,7 @@ def train(args, model: nn.Module):
         use_cutmix=args.use_cutmix,
         randaugment_n=args.randaugment_n,
         randaugment_m=args.randaugment_m,
+        input_size=args.input_size,
     )
     steps_per_epoch = len(train_loader)
 
@@ -841,7 +854,10 @@ def evaluate(args, model: nn.Module):
     # Load the test dataset from the specified directory
     test_data_dir = args.data_dir + "/raw/test"
     test_dataset = datasets.ImageFolder(
-        root=test_data_dir, transform=load_transforms(dataset_type=args.dataset)
+        root=test_data_dir,
+        transform=load_transforms(
+            dataset_type=args.dataset, input_size=args.input_size
+        ),
     )
 
     # Validate test dataset class count

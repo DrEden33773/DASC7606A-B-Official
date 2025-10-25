@@ -939,6 +939,7 @@ def get_train_transforms(
     use_cutmix: bool = False,
     randaugment_n: int = 2,
     randaugment_m: int = 9,
+    input_size: int = 32,
 ) -> AlbumentationsTransform:
     """
     Get training transforms with online augmentation.
@@ -953,6 +954,7 @@ def get_train_transforms(
         use_cutmix: Whether CutMix is used (affects CoarseDropout in traditional aug)
         randaugment_n: Number of RandAugment operations (default: 2, used when aug_strength="randaugment")
         randaugment_m: Magnitude of RandAugment (0-10, default: 9, used when aug_strength="randaugment")
+        input_size: Target input size for images (32, 64, or 96). CIFAR images will be resized.
 
     Returns:
         AlbumentationsTransform wrapper with augmentation pipeline
@@ -972,13 +974,25 @@ def get_train_transforms(
     if augmentation_strength == "randaugment":
         # Pure RandAugment mode (no stacking with traditional augmentation)
         # This is the correct way to use RandAugment per the original paper
-        # F1=0.8131 achieved with N=2, M=9
+        # F1=0.8131 achieved with N=2, M=9 (32×32)
+        # For EfficientNet: use input_size=64, M=10
         from scripts.data_augmentation import RandAugment
+
+        # Calculate Cutout hole size based on input_size (8-16 for 64×64, 4-8 for 32×32)
+        hole_size_min = input_size // 8
+        hole_size_max = input_size // 4
 
         augmentation_pipeline = A.Compose(  # type: ignore[arg-type]
             [
+                A.Resize(input_size, input_size),  # Resize CIFAR images to target size
                 RandAugment(n=randaugment_n, m=randaugment_m),
                 A.HorizontalFlip(p=0.5),  # Basic geometric transform
+                A.CoarseDropout(  # Cutout augmentation
+                    num_holes_range=(1, 1),
+                    hole_height_range=(hole_size_min, hole_size_max),
+                    hole_width_range=(hole_size_min, hole_size_max),
+                    p=0.5,
+                ),
                 A.Normalize(mean=mean, std=std),
                 ToTensorV2(),
             ]
@@ -1146,12 +1160,13 @@ def get_train_transforms(
     return AlbumentationsTransform(augmentation_pipeline)
 
 
-def load_transforms(dataset_type: str = "cifar100"):
+def load_transforms(dataset_type: str = "cifar100", input_size: int = 32):
     """
     Load the data transformations with correct normalization statistics.
 
     Args:
         dataset_type: Type of dataset ("cifar10" or "cifar100")
+        input_size: Target input size for images (32, 64, or 96)
 
     Returns:
         Composed transforms with appropriate normalization
@@ -1174,7 +1189,7 @@ def load_transforms(dataset_type: str = "cifar100"):
 
     return transforms.Compose(
         [
-            transforms.Resize((32, 32)),
+            transforms.Resize((input_size, input_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
         ]
@@ -1193,6 +1208,7 @@ def load_data(
     use_cutmix: bool = False,
     randaugment_n: int = 2,
     randaugment_m: int = 9,
+    input_size: int = 32,
 ):
     """
     Load the data from the data directory and split it into training and validation sets.
@@ -1213,6 +1229,7 @@ def load_data(
                         - False: Use pre-generated augmented data (more training samples)
         augmentation_strength: Augmentation strength for training ("light", "medium", "strong")
                                Only used when use_online_aug=True
+        input_size: Target input size for images (32, 64, or 96). CIFAR images will be resized.
 
     Returns:
         train_loader: The training data loader
@@ -1227,13 +1244,16 @@ def load_data(
             use_cutmix=use_cutmix,
             randaugment_n=randaugment_n,
             randaugment_m=randaugment_m,
+            input_size=input_size,
         )
     else:
         # OFFLINE augmentation: data is already augmented, just normalize
-        train_transforms = load_transforms(dataset_type=dataset_type)
+        train_transforms = load_transforms(
+            dataset_type=dataset_type, input_size=input_size
+        )
 
     # Validation always uses standard transforms (no augmentation)
-    val_transforms = load_transforms(dataset_type=dataset_type)
+    val_transforms = load_transforms(dataset_type=dataset_type, input_size=input_size)
 
     # Load the train dataset
     # CRITICAL FIX: Ensure we're loading from the correct directory
