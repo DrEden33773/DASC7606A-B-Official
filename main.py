@@ -216,10 +216,16 @@ def parse_args():
 
     # Training parameters
     parser.add_argument(
-        "--batch_size", type=int, default=128, help="Batch size for training"
+        "--batch_size",
+        type=int,
+        default=96,  # 128 for 32*32, 96 for 64*64
+        help="Batch size for training",
     )
     parser.add_argument(
-        "--num_epochs", type=int, default=400, help="Number of training epochs"
+        "--num_epochs",
+        type=int,
+        default=600,  # 400
+        help="Number of training epochs",
     )
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument(
