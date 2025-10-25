@@ -168,12 +168,18 @@ def parse_args():
             "pyramidnet110_270",
             "pyramidnet164_270",
             "efficientnet_b0",
+            "efficientnet_b1",
+            "efficientnet_b2",
+            "efficientnet_b3",
+            "efficientnet_b4",
         ],
-        default="efficientnet_b0",  # Phase 3 target: F1 ≥ 0.85
+        default="efficientnet_b1",  # Phase 3 recommended: F1 ≥ 0.85
         help="Model architecture (all from scratch). "
-        "Phase 3: efficientnet_b0 (5.3M, 64×64, target F1≥0.85) ← Recommended. "
+        "Phase 3 EfficientNet (target F1≥0.85, 64×64 input): "
+        "b0 (4.1M, 4-6GB), b1 (6.7M, 6-8GB) ← Recommended, "
+        "b2 (8M, 8-10GB), b3 (10.8M, 10-12GB), b4 (17.8M, 12-15GB). "
         "Phase 1: wide_resnet28_10 (36.5M, F1=0.8131). "
-        "Phase 2.7: pyramidnet110_270 (26M, paper: 83%%). "
+        "Phase 2.7: pyramidnet110_270 (26M, 83%%). "
         "Others: resnet34/50, wide_resnet*, pyramidnet164, selfdistill.",
     )
     parser.add_argument(

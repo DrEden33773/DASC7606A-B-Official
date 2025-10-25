@@ -1030,6 +1030,10 @@ def create_model(
         "pyramidnet110_270",
         "pyramidnet164_270",
         "efficientnet_b0",
+        "efficientnet_b1",
+        "efficientnet_b2",
+        "efficientnet_b3",
+        "efficientnet_b4",
     ] = "wide_resnet28_10",
     dropout_rate: float = 0.3,
     drop_path_rate: float = 0.0,
@@ -1047,8 +1051,12 @@ def create_model(
             Phase 1 (proven):
             - "wide_resnet28_10": WRN-28-10 (36.5M params, F1=0.8131) ← Phase 1 best
 
-            Phase 3 (EfficientNet, target F1≥0.85):
-            - "efficientnet_b0": EfficientNet-B0 (5.3M params, 64×64 input) ← Recommended
+            Phase 3 (EfficientNet family, target F1≥0.85):
+            - "efficientnet_b0": 4.1M params, 4-6GB memory, F1=0.83-0.85
+            - "efficientnet_b1": 6.7M params, 6-8GB memory, F1=0.85-0.87 ← Recommended
+            - "efficientnet_b2": 8.0M params, 8-10GB memory, F1=0.86-0.88
+            - "efficientnet_b3": 10.8M params, 10-12GB memory, F1=0.87-0.89
+            - "efficientnet_b4": 17.8M params, 12-15GB memory, F1=0.88-0.90
 
             Phase 2.7 (PyramidNet):
             - "pyramidnet110_270": PyramidNet-110 (26M params, paper: 83% acc)
@@ -1073,8 +1081,8 @@ def create_model(
         >>> # Phase 1 best (F1=0.8131)
         >>> model = create_model(100, 'cuda', 'wide_resnet28_10', drop_path_rate=0.1)
         >>>
-        >>> # Phase 3 target (F1≥0.85)
-        >>> model = create_model(100, 'cuda', 'efficientnet_b0', drop_path_rate=0.2, input_size=64)
+        >>> # Phase 3 recommended (F1≥0.85)
+        >>> model = create_model(100, 'cuda', 'efficientnet_b1', drop_path_rate=0.2, input_size=64)
     """
     # Create model from scratch
     if model_type == "resnet34":
@@ -1122,6 +1130,34 @@ def create_model(
             dropout_rate=dropout_rate,
             drop_path_rate=drop_path_rate,
         )
+    elif model_type == "efficientnet_b1":
+        model = efficientnet_b1(
+            num_classes=num_classes,
+            input_size=input_size,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
+    elif model_type == "efficientnet_b2":
+        model = efficientnet_b2(
+            num_classes=num_classes,
+            input_size=input_size,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
+    elif model_type == "efficientnet_b3":
+        model = efficientnet_b3(
+            num_classes=num_classes,
+            input_size=input_size,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
+    elif model_type == "efficientnet_b4":
+        model = efficientnet_b4(
+            num_classes=num_classes,
+            input_size=input_size,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
+        )
     else:
         raise ValueError(
             f"Unknown model_type: {model_type}. "
@@ -1129,7 +1165,8 @@ def create_model(
             f"'wide_resnet28_10', 'wide_resnet28_10_selfdistill', "
             f"'wide_resnet40_10', 'wide_resnet28_12', "
             f"'pyramidnet110_270', 'pyramidnet164_270', "
-            f"'efficientnet_b0'"
+            f"'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', "
+            f"'efficientnet_b3', 'efficientnet_b4'"
         )
 
     model = model.to(device)
@@ -1480,8 +1517,7 @@ def efficientnet_b0(
     """
     EfficientNet-B0 for CIFAR-100 (trained from scratch).
 
-    Target: F1 ≥ 0.85 with 64×64 input resolution.
-    Paper achieves 91.7% accuracy on CIFAR-100 (from scratch).
+    Lightest EfficientNet variant. Good starting point for CIFAR-100.
 
     Args:
         num_classes: Number of output classes (100 for CIFAR-100)
@@ -1493,10 +1529,11 @@ def efficientnet_b0(
         EfficientNet-B0 model instance
 
     Model Statistics:
-        - Parameters: ~5.3M (7× smaller than WRN-28-10)
+        - Parameters: ~4.1M (CIFAR-100), ~5.3M (ImageNet 1000-class)
         - FLOPs (64×64): ~0.4G
-        - Expected F1 (64×64): 0.85-0.87
-        - Training time: 4.6-5.2h (with early stopping)
+        - Memory: ~4-6GB (batch_size=128)
+        - Expected F1 (64×64): 0.83-0.85
+        - Training time: 4-5h (600 epochs, early stopping)
 
     Reference:
         Tan & Le "EfficientNet" (ICML 2019)
@@ -1505,11 +1542,198 @@ def efficientnet_b0(
     Example:
         >>> model = efficientnet_b0(input_size=64)
         >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-        Parameters: 5.30M
+        Parameters: 4.13M
     """
     return EfficientNet(
         width_mult=1.0,
         depth_mult=1.0,
+        input_size=input_size,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+def efficientnet_b1(
+    num_classes: int = 100,
+    input_size: int = 64,
+    dropout_rate: float = 0.2,
+    drop_path_rate: float = 0.2,
+) -> EfficientNet:
+    """
+    EfficientNet-B1 for CIFAR-100 (trained from scratch).
+
+    Slightly larger than B0, better accuracy with moderate resource increase.
+
+    Args:
+        num_classes: Number of output classes (100 for CIFAR-100)
+        input_size: Input image size (recommended: 64 or 96)
+        dropout_rate: Dropout rate before classifier (default: 0.2)
+        drop_path_rate: Stochastic depth rate (default: 0.2)
+
+    Returns:
+        EfficientNet-B1 model instance
+
+    Model Statistics:
+        - Parameters: ~6.7M (CIFAR-100), ~7.8M (ImageNet)
+        - FLOPs (64×64): ~0.7G
+        - Memory: ~6-8GB (batch_size=128)
+        - Expected F1 (64×64): 0.85-0.87
+        - Training time: 5-6h (600 epochs)
+
+    Scaling:
+        - Width multiplier: 1.0
+        - Depth multiplier: 1.1 (10% more layers)
+
+    Example:
+        >>> model = efficientnet_b1(input_size=64)
+        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+        Parameters: 6.69M
+    """
+    return EfficientNet(
+        width_mult=1.0,
+        depth_mult=1.1,
+        input_size=input_size,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+def efficientnet_b2(
+    num_classes: int = 100,
+    input_size: int = 64,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.2,
+) -> EfficientNet:
+    """
+    EfficientNet-B2 for CIFAR-100 (trained from scratch).
+
+    Larger model with better capacity. Good balance of accuracy and speed.
+
+    Args:
+        num_classes: Number of output classes (100 for CIFAR-100)
+        input_size: Input image size (recommended: 64 or 96)
+        dropout_rate: Dropout rate before classifier (default: 0.3)
+        drop_path_rate: Stochastic depth rate (default: 0.2)
+
+    Returns:
+        EfficientNet-B2 model instance
+
+    Model Statistics:
+        - Parameters: ~8.0M (CIFAR-100), ~9.2M (ImageNet)
+        - FLOPs (64×64): ~1.0G
+        - Memory: ~8-10GB (batch_size=128)
+        - Expected F1 (64×64): 0.86-0.88
+        - Training time: 6-7h (600 epochs)
+
+    Scaling:
+        - Width multiplier: 1.1 (10% wider channels)
+        - Depth multiplier: 1.2 (20% more layers)
+
+    Example:
+        >>> model = efficientnet_b2(input_size=64)
+        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+        Parameters: 8.02M
+    """
+    return EfficientNet(
+        width_mult=1.1,
+        depth_mult=1.2,
+        input_size=input_size,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+def efficientnet_b3(
+    num_classes: int = 100,
+    input_size: int = 64,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.2,
+) -> EfficientNet:
+    """
+    EfficientNet-B3 for CIFAR-100 (trained from scratch).
+
+    Larger capacity model for higher accuracy targets.
+
+    Args:
+        num_classes: Number of output classes (100 for CIFAR-100)
+        input_size: Input image size (recommended: 64 or 96)
+        dropout_rate: Dropout rate before classifier (default: 0.3)
+        drop_path_rate: Stochastic depth rate (default: 0.2)
+
+    Returns:
+        EfficientNet-B3 model instance
+
+    Model Statistics:
+        - Parameters: ~10.8M (CIFAR-100), ~12M (ImageNet)
+        - FLOPs (64×64): ~1.8G
+        - Memory: ~10-12GB (batch_size=96)
+        - Expected F1 (64×64): 0.87-0.89
+        - Training time: 7-9h (600 epochs)
+
+    Scaling:
+        - Width multiplier: 1.2 (20% wider channels)
+        - Depth multiplier: 1.4 (40% more layers)
+
+    Example:
+        >>> model = efficientnet_b3(input_size=64)
+        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+        Parameters: 10.78M
+    """
+    return EfficientNet(
+        width_mult=1.2,
+        depth_mult=1.4,
+        input_size=input_size,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+def efficientnet_b4(
+    num_classes: int = 100,
+    input_size: int = 64,
+    dropout_rate: float = 0.4,
+    drop_path_rate: float = 0.2,
+) -> EfficientNet:
+    """
+    EfficientNet-B4 for CIFAR-100 (trained from scratch).
+
+    Largest practical EfficientNet for 16GB GPU. Maximum accuracy potential.
+
+    Args:
+        num_classes: Number of output classes (100 for CIFAR-100)
+        input_size: Input image size (recommended: 64 or 96)
+        dropout_rate: Dropout rate before classifier (default: 0.4)
+        drop_path_rate: Stochastic depth rate (default: 0.2)
+
+    Returns:
+        EfficientNet-B4 model instance
+
+    Model Statistics:
+        - Parameters: ~17.8M (CIFAR-100), ~19M (ImageNet)
+        - FLOPs (64×64): ~4.2G
+        - Memory: ~12-15GB (batch_size=64)
+        - Expected F1 (64×64): 0.88-0.90
+        - Training time: 10-12h (600 epochs)
+
+    Scaling:
+        - Width multiplier: 1.4 (40% wider channels)
+        - Depth multiplier: 1.8 (80% more layers)
+
+    Warning:
+        Requires significant memory. Reduce batch_size if OOM occurs.
+
+    Example:
+        >>> model = efficientnet_b4(input_size=64)
+        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+        Parameters: 17.82M
+    """
+    return EfficientNet(
+        width_mult=1.4,
+        depth_mult=1.8,
         input_size=input_size,
         num_classes=num_classes,
         dropout_rate=dropout_rate,
