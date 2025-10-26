@@ -167,18 +167,15 @@ def parse_args():
             "wide_resnet28_12",
             "pyramidnet110_270",
             "pyramidnet164_270",
-            "efficientnet_b0",
-            "efficientnet_b1",
-            "efficientnet_b2",
-            "efficientnet_b3",
-            "efficientnet_b4",
+            "convmixer_768_32",
+            "convmixer_1536_20",
+            "convmixer_1024_20",
         ],
-        default="efficientnet_b1",  # Phase 3 recommended: F1 ≥ 0.85
+        default="convmixer_768_32",  # Phase 3: ConvMixer (target F1≥0.85)
         help="Model architecture (all from scratch). "
-        "Phase 3 EfficientNet (target F1≥0.85, 64×64 input): "
-        "b0 (4.1M, 4-6GB), b1 (6.7M, 6-8GB) ← Recommended, "
-        "b2 (8M, 8-10GB), b3 (10.8M, 10-12GB), b4 (17.8M, 12-15GB). "
-        "Phase 1: wide_resnet28_10 (36.5M, F1=0.8131). "
+        "Phase 3 ConvMixer (NEW, target F1≥0.85): convmixer_768_32 (21M) ← Recommended, "
+        "convmixer_1536_20 (52M, highest capacity), convmixer_1024_20 (24M, balanced). "
+        "Phase 1 best: wide_resnet28_10 (36.5M, F1=0.8131), wide_resnet28_12 (52.8M, F1=0.82). "
         "Phase 2.7: pyramidnet110_270 (26M, 83%%). "
         "Others: resnet34/50, wide_resnet*, pyramidnet164, selfdistill.",
     )
@@ -191,18 +188,18 @@ def parse_args():
     parser.add_argument(
         "--drop_path_rate",
         type=float,
-        default=0.2,
+        default=0.1,
         help="Stochastic Depth (DropPath) rate. "
-        "Recommended: 0.1 for WRN, 0.2 for EfficientNet, 0.15 for PyramidNet. "
+        "Recommended: 0.1 for WRN, 0.15 for PyramidNet. "
         "Randomly drops residual branches during training to reduce overfitting.",
     )
     parser.add_argument(
         "--input_size",
         type=int,
-        default=64,
+        default=32,
         help="Input image size (32, 64, or 96). "
         "CIFAR images will be resized to this size. "
-        "Recommended: 64 for EfficientNet (target F1≥0.85), 32 for other models. "
+        "CIFAR-100 native size is 32×32. "
         "Larger = better detail (esp. for human classes), slower training.",
     )
     parser.add_argument(

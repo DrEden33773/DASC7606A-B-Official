@@ -1,5 +1,4 @@
-import math
-from typing import List, Literal, Optional, Protocol, Type
+from typing import List, Literal, Optional, Protocol, Type, Union
 
 import torch
 import torch.nn as nn
@@ -112,7 +111,6 @@ class BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(out_channels)
 
         self.downsample = downsample
-        self.stride = stride
 
     def forward(self, x):
         identity = x
@@ -126,7 +124,7 @@ class BasicBlock(nn.Module):
         out = self.conv2(out)
         out = self.bn2(out)
 
-        # Skip connection
+        # Add skip connection
         if self.downsample is not None:
             identity = self.downsample(x)
 
@@ -138,26 +136,18 @@ class BasicBlock(nn.Module):
 
 class Bottleneck(nn.Module):
     """
-    Bottleneck residual block for ResNet (used in ResNet-50/101/152)
+    Bottleneck block for deeper ResNets (ResNet-50/101/152)
 
-    This block uses a 1x1 -> 3x3 -> 1x1 convolution structure:
-    1. 1x1 conv reduces channels (compression)
-    2. 3x3 conv processes features in lower dimensional space
-    3. 1x1 conv expands channels back (expansion)
-
-    This design is more parameter-efficient than BasicBlock for deeper networks.
+    Uses 1x1 -> 3x3 -> 1x1 convolutions to reduce parameters
 
     Args:
         in_channels: Number of input channels
-        out_channels: Number of output channels (before expansion)
+        out_channels: Number of output channels
         stride: Stride for the 3x3 convolution (1 or 2)
         downsample: Optional downsampling layer for skip connection
-
-    Note:
-        The actual output channels will be out_channels * expansion (expansion = 4)
     """
 
-    expansion = 4  # Output channels are 4x the base channels
+    expansion = 4  # Output channels = out_channels * expansion
 
     def __init__(
         self,
@@ -168,13 +158,11 @@ class Bottleneck(nn.Module):
     ):
         super(Bottleneck, self).__init__()
 
-        # 1x1 convolution for channel reduction (compression)
-        # Example: 256 -> 64 channels
+        # 1x1 convolution (reduce dimensions)
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
 
-        # 3x3 convolution (processes features in compressed space)
-        # Example: 64 -> 64 channels
+        # 3x3 convolution (main computation)
         self.conv2 = nn.Conv2d(
             out_channels,
             out_channels,
@@ -185,34 +173,32 @@ class Bottleneck(nn.Module):
         )
         self.bn2 = nn.BatchNorm2d(out_channels)
 
-        # 1x1 convolution for channel expansion
-        # Example: 64 -> 256 channels (64 * expansion = 64 * 4)
+        # 1x1 convolution (restore dimensions)
         self.conv3 = nn.Conv2d(
             out_channels, out_channels * self.expansion, kernel_size=1, bias=False
         )
         self.bn3 = nn.BatchNorm2d(out_channels * self.expansion)
 
         self.downsample = downsample
-        self.stride = stride
 
     def forward(self, x):
         identity = x
 
-        # 1x1 compression
+        # 1x1 reduce
         out = self.conv1(x)
         out = self.bn1(out)
         out = F.relu(out)
 
-        # 3x3 convolution
+        # 3x3
         out = self.conv2(out)
         out = self.bn2(out)
         out = F.relu(out)
 
-        # 1x1 expansion
+        # 1x1 expand
         out = self.conv3(out)
         out = self.bn3(out)
 
-        # Skip connection (with optional downsampling)
+        # Add skip connection
         if self.downsample is not None:
             identity = self.downsample(x)
 
@@ -222,76 +208,66 @@ class Bottleneck(nn.Module):
         return out
 
 
-class ResNetCIFAR(nn.Module):
+class ResNet(nn.Module):
     """
-    ResNet architecture optimized for CIFAR-10/100 (32x32 images)
+    ResNet architecture adapted for CIFAR-100
 
-    Modified from the original ResNet to work with smaller input sizes:
-    - Uses 3x3 conv instead of 7x7 for the initial layer
-    - Removes the initial max pooling layer
-    - Adapted for 32x32 input images
+    This implementation is optimized for 32x32 images:
+    - Uses 3x3 conv with stride=1 as the first layer (instead of 7x7 with stride=2)
+    - Removed the first MaxPool layer
+    - Standard residual blocks with skip connections
 
     Args:
         block: Type of residual block (BasicBlock or Bottleneck)
-        layers: List of number of blocks in each layer
-        num_classes: Number of output classes
-        dropout_rate: Dropout rate for regularization (default: 0.3)
+        layers: List of number of blocks in each stage
+        num_classes: Number of output classes (100 for CIFAR-100)
+        dropout_rate: Dropout rate before final classifier
     """
 
     def __init__(
         self,
-        block: Type[ResNetBlock],
-        layers: list,
-        num_classes: int = 10,
+        block: Union[Type[BasicBlock], Type[Bottleneck]],
+        layers: List[int],
+        num_classes: int = 100,
         dropout_rate: float = 0.3,
     ):
-        super(ResNetCIFAR, self).__init__()
+        super(ResNet, self).__init__()
 
         self.in_channels = 64
 
-        # Initial convolution layer (adapted for CIFAR 32x32 input)
-        # Using 3x3 conv instead of 7x7 to preserve spatial dimensions
+        # Initial convolution (adapted for CIFAR-100's 32x32 images)
         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
-        # No max pooling here (unlike standard ResNet) to preserve 32x32 resolution
 
-        # Residual layers
+        # Residual blocks
         self.layer1 = self._make_layer(block, 64, layers[0], stride=1)
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
-        # Global average pooling and classifier
+        # Global pooling and classifier
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.dropout = nn.Dropout(dropout_rate)
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
         # Initialize weights
-        self._initialize_weights()
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def _make_layer(
         self,
-        block: Type[ResNetBlock],
+        block: Union[Type[BasicBlock], Type[Bottleneck]],
         out_channels: int,
-        num_blocks: int,
-        stride: int = 1,
-    ) -> nn.Sequential:
-        """
-        Create a residual layer consisting of multiple blocks
-
-        Args:
-            block: Type of residual block
-            out_channels: Number of output channels
-            num_blocks: Number of blocks in this layer
-            stride: Stride for the first block
-
-        Returns:
-            Sequential layer containing all blocks
-        """
+        blocks: int,
+        stride: int,
+    ):
         downsample = None
 
-        # Create downsampling layer if needed (when stride != 1 or channels change)
+        # Create downsampling layer if needed (stride != 1 or channel mismatch)
         if stride != 1 or self.in_channels != out_channels * block.expansion:
             downsample = nn.Sequential(
                 nn.Conv2d(
@@ -304,382 +280,104 @@ class ResNetCIFAR(nn.Module):
                 nn.BatchNorm2d(out_channels * block.expansion),
             )
 
-        layers = []
-        # First block (may have downsampling)
+        layers: List[nn.Module] = []
+
+        # First block (may downsample)
         layers.append(block(self.in_channels, out_channels, stride, downsample))
         self.in_channels = out_channels * block.expansion
 
         # Remaining blocks
-        for _ in range(1, num_blocks):
+        for _ in range(1, blocks):
             layers.append(block(self.in_channels, out_channels))
 
         return nn.Sequential(*layers)
 
-    def _initialize_weights(self):
-        """Initialize model weights using He initialization"""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
-
     def forward(self, x):
-        # Initial convolution
+        # Initial conv
         x = self.conv1(x)
         x = self.bn1(x)
-        x = self.relu(x)
-        # No max pooling for CIFAR
+        x = F.relu(x)
 
-        # Residual layers
+        # Residual blocks
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
 
-        # Global average pooling
+        # Global pooling and classifier
         x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
-
-        # Dropout and classification
+        x = torch.flatten(x, 1)
         x = self.dropout(x)
         x = self.fc(x)
 
         return x
 
 
-# resnet18_cifar removed - not used in experiments, no performance benefit over resnet34
-
-
-def resnet34_cifar(num_classes: int = 10, dropout_rate: float = 0.3) -> ResNetCIFAR:
+def resnet34_cifar(num_classes: int = 100, dropout_rate: float = 0.3) -> ResNet:
     """
-    Construct ResNet-34 model for CIFAR datasets
-
-    Args:
-        num_classes: Number of output classes
-        dropout_rate: Dropout rate for regularization
-
-    Returns:
-        ResNet-34 model optimized for CIFAR
-    """
-    return ResNetCIFAR(BasicBlock, [3, 4, 6, 3], num_classes, dropout_rate)
-
-
-def resnet50_cifar(num_classes: int = 10, dropout_rate: float = 0.3) -> ResNetCIFAR:
-    """
-    Construct ResNet-50 model for CIFAR datasets
-
-    This model uses Bottleneck blocks instead of BasicBlock:
-    - 50 layers total (vs 34 for ResNet-34)
-    - Uses 1x1->3x3->1x1 convolution structure (more parameter-efficient)
-    - 4x expansion in each block (vs 1x for BasicBlock)
-    - More representational capacity for complex datasets like CIFAR-100
-
-    Architecture: [3, 4, 6, 3] blocks in 4 stages
-    - Stage 1: 64 channels  -> 256 channels (3 blocks)
-    - Stage 2: 128 channels -> 512 channels (4 blocks)
-    - Stage 3: 256 channels -> 1024 channels (6 blocks)
-    - Stage 4: 512 channels -> 2048 channels (3 blocks)
-
-    Total parameters: ~23.5M (vs ~21M for ResNet-34)
+    ResNet-34 adapted for CIFAR-100
 
     Args:
         num_classes: Number of output classes (100 for CIFAR-100)
-        dropout_rate: Dropout rate for regularization (default: 0.3)
+        dropout_rate: Dropout rate before final classifier
 
     Returns:
-        ResNet-50 model optimized for CIFAR
+        ResNet-34 model instance
 
-    Note:
-        For CIFAR-100, recommended dropout_rate is 0.4-0.5 due to increased model capacity.
-        Expected performance: +0.02-0.03 F1 improvement over ResNet-34 (from scratch).
+    Model size: ~21M parameters
+    Expected F1-score: ~0.77 (Phase 1)
     """
-    return ResNetCIFAR(Bottleneck, [3, 4, 6, 3], num_classes, dropout_rate)
+    return ResNet(BasicBlock, [3, 4, 6, 3], num_classes, dropout_rate)
 
 
-# create_pretrained_resnet removed - pretraining is not allowed for this assignment
-# All models must be trained from scratch per assignment guidelines
-
-
-# ============================================================================
-# PyramidNet - Deep Pyramidal Residual Networks (Phase 2.7)
-# ============================================================================
-
-
-class PyramidBasicBlock(nn.Module):
+def resnet50_cifar(num_classes: int = 100, dropout_rate: float = 0.3) -> ResNet:
     """
-    PyramidNet basic block with pre-activation and zero-padded shortcuts.
-
-    Reference:
-        Han et al. "Deep Pyramidal Residual Networks" (CVPR 2017)
-        https://arxiv.org/abs/1610.02915
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        stride: int,
-        drop_path_rate: float = 0.0,
-    ) -> None:
-        super().__init__()
-
-        self.bn1 = nn.BatchNorm2d(in_channels)
-        self.conv1 = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            bias=False,
-        )
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
-        )
-
-        self.drop_path = DropPath(drop_path_rate)
-        self.stride = stride
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Shortcut path (before pre-activation!)
-        shortcut = x
-
-        # Downsampling if needed
-        if self.stride != 1:
-            shortcut = F.avg_pool2d(shortcut, kernel_size=2, stride=2)
-
-        # Zero-pad channels if dimension increases (PyramidNet key technique)
-        if self.in_channels != self.out_channels:
-            pad_channels = self.out_channels - self.in_channels
-            # Pad on channel dimension: [N, C, H, W] -> [N, C+pad, H, W]
-            shortcut = F.pad(
-                shortcut,
-                (0, 0, 0, 0, 0, pad_channels),
-                mode="constant",
-                value=0,
-            )
-
-        # Main path with pre-activation
-        out = F.relu(self.bn1(x))
-        out = self.conv1(out)
-        out = F.relu(self.bn2(out))
-        out = self.conv2(out)
-
-        # Drop path
-        out = self.drop_path(out)
-
-        # Add shortcut
-        out = out + shortcut
-
-        return out
-
-
-class PyramidNet(nn.Module):
-    """
-    PyramidNet for CIFAR datasets.
-
-    Gradually increases channel dimensions across all blocks instead of
-    sudden jumps at downsampling points, improving feature diversity.
+    ResNet-50 adapted for CIFAR-100
 
     Args:
-        depth: Network depth (e.g., 110, 164, 272)
-        alpha: Widening factor controlling final channel dimension
-        num_classes: Number of output classes
-        drop_path_rate: Stochastic depth rate
+        num_classes: Number of output classes (100 for CIFAR-100)
+        dropout_rate: Dropout rate before final classifier
+
+    Returns:
+        ResNet-50 model instance
+
+    Model size: ~23.5M parameters
+    Expected F1-score: ~0.77 (Phase 1)
     """
-
-    def __init__(
-        self,
-        depth: int,
-        alpha: int,
-        num_classes: int = 100,
-        drop_path_rate: float = 0.0,
-    ) -> None:
-        super().__init__()
-
-        # Calculate blocks per group
-        # PyramidNet depth = 2 + 6n (for bottleneck: 2 + 9n)
-        # For BasicBlock: n = (depth - 2) / 6
-        assert (depth - 2) % 6 == 0, f"Depth must satisfy (depth-2)%6==0, got {depth}"
-        n = (depth - 2) // 6
-
-        # Initial channels
-        start_channels = 16
-
-        # Calculate channel increments for each block
-        # Total blocks: 3n (3 groups × n blocks)
-        total_blocks = 3 * n
-        add_channels = alpha / total_blocks  # Increment per block
-
-        # Build channel list for each block
-        in_channels_list = []
-        out_channels_list = []
-
-        current_channels = start_channels
-        for i in range(total_blocks):
-            in_channels_list.append(int(round(current_channels)))
-            current_channels += add_channels
-            out_channels_list.append(int(round(current_channels)))
-
-        # Calculate stochastic depth rates (linear increase)
-        dp_rates = [
-            i * drop_path_rate / (total_blocks - 1) if total_blocks > 1 else 0.0
-            for i in range(total_blocks)
-        ]
-
-        # Initial convolution (no BN here, PyramidBasicBlock has pre-activation)
-        self.conv1 = nn.Conv2d(
-            3, start_channels, kernel_size=3, stride=1, padding=1, bias=False
-        )
-
-        # Build three groups
-        block_idx = 0
-        self.layer1 = self._make_layer(
-            n,
-            in_channels_list[block_idx : block_idx + n],
-            out_channels_list[block_idx : block_idx + n],
-            dp_rates[block_idx : block_idx + n],
-            stride=1,
-        )
-        block_idx += n
-
-        self.layer2 = self._make_layer(
-            n,
-            in_channels_list[block_idx : block_idx + n],
-            out_channels_list[block_idx : block_idx + n],
-            dp_rates[block_idx : block_idx + n],
-            stride=2,
-        )
-        block_idx += n
-
-        self.layer3 = self._make_layer(
-            n,
-            in_channels_list[block_idx : block_idx + n],
-            out_channels_list[block_idx : block_idx + n],
-            dp_rates[block_idx : block_idx + n],
-            stride=2,
-        )
-
-        # Final BN and FC
-        final_channels = out_channels_list[-1]
-        self.bn_final = nn.BatchNorm2d(final_channels)
-        self.fc = nn.Linear(final_channels, num_classes)
-
-        # Initialize weights
-        self._initialize_weights()
-
-    def _make_layer(
-        self,
-        num_blocks: int,
-        in_channels_list: List[int],
-        out_channels_list: List[int],
-        dp_rates: List[float],
-        stride: int,
-    ) -> nn.Sequential:
-        """Create a layer with gradually increasing channels."""
-        layers: List[nn.Module] = []
-
-        for i in range(num_blocks):
-            # First block of group has stride, others have stride=1
-            block_stride = stride if i == 0 else 1
-
-            layers.append(
-                PyramidBasicBlock(
-                    in_channels=in_channels_list[i],
-                    out_channels=out_channels_list[i],
-                    stride=block_stride,
-                    drop_path_rate=dp_rates[i],
-                )
-            )
-
-        return nn.Sequential(*layers)
-
-    def _initialize_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-                nn.init.constant_(m.bias, 0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Initial conv (no activation, pre-activation is in blocks)
-        x = self.conv1(x)
-
-        # Three pyramid layers
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-
-        # Final activation and pooling
-        x = F.relu(self.bn_final(x))
-        x = F.adaptive_avg_pool2d(x, (1, 1))
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
-
-        return x
-
-
-def pyramidnet110_270(
-    num_classes: int = 100,
-    drop_path_rate: float = 0.1,
-) -> PyramidNet:
-    """
-    PyramidNet-110 with alpha=270 for CIFAR.
-
-    Paper result: CIFAR-100 ~83% accuracy (~F1 0.83)
-    Target with SD+RA: F1 ≥ 0.85
-
-    Architecture:
-    - Depth: 110 layers
-    - Alpha: 270 (widening factor)
-    - Parameters: ~26M
-    - Final channels: 16 + 270 = 286
-    """
-    return PyramidNet(
-        depth=110, alpha=270, num_classes=num_classes, drop_path_rate=drop_path_rate
-    )
-
-
-def pyramidnet164_270(
-    num_classes: int = 100,
-    drop_path_rate: float = 0.15,
-) -> PyramidNet:
-    """
-    PyramidNet-164 with alpha=270 for CIFAR (deeper variant).
-
-    Phase 3 option if PyramidNet-110 is successful.
-    """
-    return PyramidNet(
-        depth=164, alpha=270, num_classes=num_classes, drop_path_rate=drop_path_rate
-    )
+    return ResNet(Bottleneck, [3, 4, 6, 3], num_classes, dropout_rate)
 
 
 # ============================================================================
-# Wide ResNet - Optimized for CIFAR-100 from scratch training (Phase 1)
+# Wide ResNet - High capacity variant of ResNet
 # ============================================================================
 
 
 class WideBasicBlock(nn.Module):
-    """Wide ResNet basic residual block with pre-activation structure."""
+    """
+    Wide Basic Block for Wide ResNet with Stochastic Depth support.
+
+    Compared to standard BasicBlock:
+    - Supports width multiplier (k) to increase channel capacity
+    - Adds dropout for regularization
+    - Supports stochastic depth (DropPath) for better generalization
+    - Modified activation order (BN-ReLU-Conv)
+
+    Args:
+        in_channels: Number of input channels
+        out_channels: Number of output channels
+        stride: Stride for convolution (1 or 2)
+        dropout_rate: Dropout probability between conv layers
+        drop_path_rate: Stochastic depth drop probability
+    """
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        stride: int,
-        dropout_rate: float,
+        stride: int = 1,
+        dropout_rate: float = 0.3,
         drop_path_rate: float = 0.0,
-    ) -> None:
+    ):
         super().__init__()
 
         self.bn1 = nn.BatchNorm2d(in_channels)
@@ -691,118 +389,132 @@ class WideBasicBlock(nn.Module):
             padding=1,
             bias=False,
         )
-        self.dropout = nn.Dropout(p=dropout_rate)
+
         self.bn2 = nn.BatchNorm2d(out_channels)
+        self.dropout = nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
         self.conv2 = nn.Conv2d(
             out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
         )
-        self.drop_path = DropPath(drop_path_rate)
 
+        # Stochastic depth (DropPath)
+        self.drop_path = (
+            DropPath(drop_path_rate) if drop_path_rate > 0 else nn.Identity()
+        )
+
+        # Skip connection
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Conv2d(
                 in_channels, out_channels, kernel_size=1, stride=stride, bias=False
             )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.conv1(F.relu(self.bn1(x)))
+    def forward(self, x):
+        # Main path
+        out = F.relu(self.bn1(x))
+        out = self.conv1(out)
+
+        out = F.relu(self.bn2(out))
         out = self.dropout(out)
-        out = self.conv2(F.relu(self.bn2(out)))
+        out = self.conv2(out)
+
+        # Apply stochastic depth
         out = self.drop_path(out)
-        out = out + self.shortcut(x)
+
+        # Skip connection
+        out += self.shortcut(x)
+
         return out
 
 
 class WideResNet(nn.Module):
     """
-    Wide Residual Network for CIFAR datasets.
+    Wide ResNet architecture for CIFAR-100.
 
-    Achieved F1=0.8131 on CIFAR-100 with drop_path_rate=0.1 + RandAugment.
+    Wide ResNet achieves better accuracy than standard ResNet by:
+    1. Increasing width (channels) instead of depth
+    2. Using dropout for regularization
+    3. Supporting stochastic depth for deeper networks
+
+    Args:
+        depth: Total network depth (e.g., 28 for WRN-28-10)
+        widen_factor: Width multiplier (e.g., 10 for WRN-28-10)
+        num_classes: Number of output classes (100 for CIFAR-100)
+        dropout_rate: Dropout rate between conv layers
+        drop_path_rate: Stochastic depth rate (recommended: 0.1-0.2)
+
+    Architecture:
+        - Initial conv: 3 -> 16 channels
+        - Group 1: 16 -> 16*k channels, spatial size 32x32
+        - Group 2: 16*k -> 32*k channels, spatial size 16x16
+        - Group 3: 32*k -> 64*k channels, spatial size 8x8
+        - Global pooling + classifier
+
+    Reference:
+        Zagoruyko & Komodakis "Wide Residual Networks" (BMVC 2016)
+        https://arxiv.org/abs/1605.07146
     """
 
     def __init__(
         self,
-        depth: int,
-        widen_factor: int,
+        depth: int = 28,
+        widen_factor: int = 10,
         num_classes: int = 100,
         dropout_rate: float = 0.3,
         drop_path_rate: float = 0.0,
-    ) -> None:
+    ):
         super().__init__()
 
-        assert (depth - 4) % 6 == 0, f"Depth must satisfy (depth-4)%6==0, got {depth}"
+        # Calculate number of blocks per group
+        assert (depth - 4) % 6 == 0, "depth should be 6n+4 (e.g., 28, 40)"
+        n = (depth - 4) // 6  # Number of blocks per group
 
-        n_blocks = (depth - 4) // 6
-        n_channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
+        # Channel progression
+        channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
 
-        # Calculate stochastic depth rates (linear increase)
-        total_blocks = n_blocks * 3
-        drop_rates = [
-            i * drop_path_rate / (total_blocks - 1) if total_blocks > 1 else 0.0
-            for i in range(total_blocks)
-        ]
-
-        self.in_channels = n_channels[0]
+        # Initial convolution
         self.conv1 = nn.Conv2d(
-            3, n_channels[0], kernel_size=3, stride=1, padding=1, bias=False
+            3, channels[0], kernel_size=3, stride=1, padding=1, bias=False
         )
 
-        block_idx = 0
-        self.layer1 = self._make_layer(
-            n_channels[1],
-            n_blocks,
-            dropout_rate,
+        # Calculate stochastic depth rates (linearly increasing)
+        total_blocks = 3 * n
+        drop_rates = [drop_path_rate * i / total_blocks for i in range(total_blocks)]
+
+        # Three groups of wide residual blocks
+        self.group1 = self._make_group(
+            WideBasicBlock,
+            channels[0],
+            channels[1],
+            n,
             stride=1,
-            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+            dropout_rate=dropout_rate,
+            drop_rates=drop_rates[0:n],
         )
-        block_idx += n_blocks
-        self.layer2 = self._make_layer(
-            n_channels[2],
-            n_blocks,
-            dropout_rate,
+        self.group2 = self._make_group(
+            WideBasicBlock,
+            channels[1],
+            channels[2],
+            n,
             stride=2,
-            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+            dropout_rate=dropout_rate,
+            drop_rates=drop_rates[n : 2 * n],
         )
-        block_idx += n_blocks
-        self.layer3 = self._make_layer(
-            n_channels[3],
-            n_blocks,
-            dropout_rate,
+        self.group3 = self._make_group(
+            WideBasicBlock,
+            channels[2],
+            channels[3],
+            n,
             stride=2,
-            drop_rates=drop_rates[block_idx : block_idx + n_blocks],
+            dropout_rate=dropout_rate,
+            drop_rates=drop_rates[2 * n :],
         )
 
-        self.bn1 = nn.BatchNorm2d(n_channels[3], momentum=0.9)
-        self.fc = nn.Linear(n_channels[3], num_classes)
+        # Final layers
+        self.bn = nn.BatchNorm2d(channels[3])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(channels[3], num_classes)
 
-        self._initialize_weights()
-
-    def _make_layer(
-        self,
-        out_channels: int,
-        num_blocks: int,
-        dropout_rate: float,
-        stride: int,
-        drop_rates: List[float],
-    ) -> nn.Sequential:
-        strides = [stride] + [1] * (num_blocks - 1)
-        layers: List[nn.Module] = []
-
-        for i, stride in enumerate(strides):
-            layers.append(
-                WideBasicBlock(
-                    self.in_channels,
-                    out_channels,
-                    stride,
-                    dropout_rate,
-                    drop_path_rate=drop_rates[i],
-                )
-            )
-            self.in_channels = out_channels
-
-        return nn.Sequential(*layers)
-
-    def _initialize_weights(self) -> None:
+        # Initialize weights
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
@@ -810,114 +522,45 @@ class WideResNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                nn.init.kaiming_normal_(m.weight)
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.conv1(x)
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = F.relu(self.bn1(out))
-        out = F.adaptive_avg_pool2d(out, (1, 1))
-        out = out.view(out.size(0), -1)
-        out = self.fc(out)
-        return out
-
-
-class WideResNetSelfDistill(WideResNet):
-    """
-    Wide ResNet with Self-Distillation (Be Your Own Teacher).
-
-    Adds intermediate classifiers after each layer group for self-distillation.
-    During training, deep layers teach shallow layers. During inference, only
-    the final classifier is used.
-
-    Reference:
-        Zhang et al. "Be Your Own Teacher: Improve the Performance of
-        Convolutional Neural Networks via Self Distillation" (2019)
-        https://arxiv.org/abs/1905.08094
-    """
-
-    def __init__(
+    def _make_group(
         self,
-        depth: int,
-        widen_factor: int,
-        num_classes: int = 100,
-        dropout_rate: float = 0.3,
-        drop_path_rate: float = 0.0,
-    ) -> None:
-        # Initialize base Wide ResNet
-        super().__init__(depth, widen_factor, num_classes, dropout_rate, drop_path_rate)
+        block: Type[WideBasicBlock],
+        in_channels: int,
+        out_channels: int,
+        num_blocks: int,
+        stride: int,
+        dropout_rate: float,
+        drop_rates: List[float],
+    ):
+        layers = []
 
-        # Calculate channel dimensions
-        n_channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
-
-        # Create intermediate classifiers (student classifiers)
-        self.classifier1 = self._make_auxiliary_classifier(n_channels[1], num_classes)
-        self.classifier2 = self._make_auxiliary_classifier(n_channels[2], num_classes)
-        self.classifier3 = self._make_auxiliary_classifier(n_channels[3], num_classes)
-
-    def _make_auxiliary_classifier(
-        self, in_channels: int, num_classes: int
-    ) -> nn.Module:
-        """
-        Create auxiliary classifier for intermediate supervision.
-
-        Uses bottleneck structure to reduce interference with main network.
-        """
-        return nn.Sequential(
-            # Bottleneck: reduce channels by half
-            nn.Conv2d(in_channels, in_channels // 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(in_channels // 2),
-            nn.ReLU(inplace=True),
-            # Global average pooling
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
-            # Classifier
-            nn.Linear(in_channels // 2, num_classes),
+        # First block (may downsample)
+        layers.append(
+            block(in_channels, out_channels, stride, dropout_rate, drop_rates[0])
         )
 
-    def forward(  # type: ignore[override]
-        self, x: torch.Tensor, return_all: bool = False
-    ) -> torch.Tensor | List[torch.Tensor]:
-        """
-        Forward pass with optional intermediate outputs.
+        # Remaining blocks
+        for i in range(1, num_blocks):
+            layers.append(
+                block(out_channels, out_channels, 1, dropout_rate, drop_rates[i])
+            )
 
-        Args:
-            x: Input tensor [batch_size, 3, 32, 32]
-            return_all: If True, return all classifier outputs (for training)
-                        If False, return only final output (for inference)
+        return nn.Sequential(*layers)
 
-        Returns:
-            If return_all=False: Final logits [batch_size, num_classes]
-            If return_all=True: [logits1, logits2, logits3, logits4]
-        """
-        # Initial conv
-        out = self.conv1(x)
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.group1(x)
+        x = self.group2(x)
+        x = self.group3(x)
+        x = F.relu(self.bn(x))
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
 
-        # Section 1: layer1
-        out = self.layer1(out)
-        logits1 = self.classifier1(out)
-
-        # Section 2: layer2
-        out = self.layer2(out)
-        logits2 = self.classifier2(out)
-
-        # Section 3: layer3
-        out = self.layer3(out)
-        logits3 = self.classifier3(out)
-
-        # Final classifier (teacher)
-        out = F.relu(self.bn1(out))
-        out = F.adaptive_avg_pool2d(out, (1, 1))
-        out = out.view(out.size(0), -1)
-        logits4 = self.fc(out)
-
-        if return_all:
-            return [logits1, logits2, logits3, logits4]
-        else:
-            return logits4
+        return x
 
 
 def wide_resnet28_10(
@@ -925,8 +568,246 @@ def wide_resnet28_10(
     dropout_rate: float = 0.3,
     drop_path_rate: float = 0.0,
 ) -> WideResNet:
-    """Wide ResNet-28-10 for CIFAR (36.5M params). Best: F1=0.8131 with drop_path=0.1."""
-    return WideResNet(28, 10, num_classes, dropout_rate, drop_path_rate)
+    """
+    Wide ResNet-28-10 for CIFAR-100.
+
+    Best performing model from Phase 1.
+
+    Args:
+        num_classes: Number of output classes (100 for CIFAR-100)
+        dropout_rate: Dropout rate (recommended: 0.3)
+        drop_path_rate: Stochastic depth rate (recommended: 0.1)
+
+    Returns:
+        WRN-28-10 model instance
+
+    Model Statistics:
+        - Parameters: ~36.5M
+        - Expected F1: 0.8131 (Phase 1 best)
+        - Training time: ~8-10 hours (600 epochs)
+
+    Reference:
+        Phase 1 best result: F1=0.8131 with dropout=0.3, drop_path=0.1
+    """
+    return WideResNet(
+        depth=28,
+        widen_factor=10,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+def wide_resnet40_10(
+    num_classes: int = 100,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
+) -> WideResNet:
+    """
+    Wide ResNet-40-10 for CIFAR-100.
+
+    Deeper variant with potentially better capacity.
+
+    Args:
+        num_classes: Number of output classes (100 for CIFAR-100)
+        dropout_rate: Dropout rate (recommended: 0.3)
+        drop_path_rate: Stochastic depth rate (recommended: 0.1-0.2)
+
+    Returns:
+        WRN-40-10 model instance
+
+    Model Statistics:
+        - Parameters: ~55.8M
+        - Deeper than WRN-28-10 but similar width
+    """
+    return WideResNet(
+        depth=40,
+        widen_factor=10,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+def wide_resnet28_12(
+    num_classes: int = 100,
+    dropout_rate: float = 0.3,
+    drop_path_rate: float = 0.0,
+) -> WideResNet:
+    """
+    Wide ResNet-28-12 for CIFAR-100.
+
+    Wider variant with more capacity than WRN-28-10.
+
+    Args:
+        num_classes: Number of output classes (100 for CIFAR-100)
+        dropout_rate: Dropout rate (recommended: 0.3)
+        drop_path_rate: Stochastic depth rate (recommended: 0.1)
+
+    Returns:
+        WRN-28-12 model instance
+
+    Model Statistics:
+        - Parameters: ~52.8M
+        - Expected F1: 0.82 (Phase 1)
+    """
+    return WideResNet(
+        depth=28,
+        widen_factor=12,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+# ============================================================================
+# Self-Distillation: Wide ResNet with auxiliary classifiers
+# ============================================================================
+
+
+class WideResNetSelfDistill(nn.Module):
+    """
+    Wide ResNet with self-distillation (BYOT) support.
+
+    Adds auxiliary classifiers at intermediate layers for self-distillation training.
+    This variant did not improve performance (F1=0.7968 vs 0.8131 for standard WRN).
+
+    Args:
+        depth: Network depth
+        widen_factor: Width multiplier
+        num_classes: Number of output classes
+        dropout_rate: Dropout rate
+        drop_path_rate: Stochastic depth rate
+
+    Reference:
+        Zhang et al. "Be Your Own Teacher" (ICLR 2020)
+    """
+
+    def __init__(
+        self,
+        depth: int = 28,
+        widen_factor: int = 10,
+        num_classes: int = 100,
+        dropout_rate: float = 0.3,
+        drop_path_rate: float = 0.0,
+    ):
+        super().__init__()
+
+        # Calculate number of blocks per group
+        assert (depth - 4) % 6 == 0, "depth should be 6n+4"
+        n = (depth - 4) // 6
+
+        # Channel progression
+        channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
+
+        # Initial convolution
+        self.conv1 = nn.Conv2d(
+            3, channels[0], kernel_size=3, stride=1, padding=1, bias=False
+        )
+
+        # Calculate stochastic depth rates
+        total_blocks = 3 * n
+        drop_rates = [drop_path_rate * i / total_blocks for i in range(total_blocks)]
+
+        # Three groups of wide residual blocks
+        self.group1 = self._make_group(
+            WideBasicBlock,
+            channels[0],
+            channels[1],
+            n,
+            stride=1,
+            dropout_rate=dropout_rate,
+            drop_rates=drop_rates[0:n],
+        )
+        self.group2 = self._make_group(
+            WideBasicBlock,
+            channels[1],
+            channels[2],
+            n,
+            stride=2,
+            dropout_rate=dropout_rate,
+            drop_rates=drop_rates[n : 2 * n],
+        )
+        self.group3 = self._make_group(
+            WideBasicBlock,
+            channels[2],
+            channels[3],
+            n,
+            stride=2,
+            dropout_rate=dropout_rate,
+            drop_rates=drop_rates[2 * n :],
+        )
+
+        # Final layers
+        self.bn = nn.BatchNorm2d(channels[3])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(channels[3], num_classes)
+
+        # Auxiliary classifiers for self-distillation
+        self.aux1 = self._make_auxiliary_classifier(channels[1], num_classes)
+        self.aux2 = self._make_auxiliary_classifier(channels[2], num_classes)
+
+        # Initialize weights
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                nn.init.constant_(m.bias, 0)
+
+    def _make_group(
+        self,
+        block: Type[WideBasicBlock],
+        in_channels: int,
+        out_channels: int,
+        num_blocks: int,
+        stride: int,
+        dropout_rate: float,
+        drop_rates: List[float],
+    ):
+        layers = []
+        layers.append(
+            block(in_channels, out_channels, stride, dropout_rate, drop_rates[0])
+        )
+        for i in range(1, num_blocks):
+            layers.append(
+                block(out_channels, out_channels, 1, dropout_rate, drop_rates[i])
+            )
+        return nn.Sequential(*layers)
+
+    def _make_auxiliary_classifier(self, in_channels: int, num_classes: int):
+        return nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(in_channels, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.conv1(x)
+
+        # Group 1 with auxiliary output
+        x = self.group1(x)
+        aux1_out = self.aux1(x)
+
+        # Group 2 with auxiliary output
+        x = self.group2(x)
+        aux2_out = self.aux2(x)
+
+        # Group 3 and final output
+        x = self.group3(x)
+        x = F.relu(self.bn(x))
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        main_out = self.fc(x)
+
+        # Return main and auxiliary outputs
+        if self.training:
+            return main_out, aux1_out, aux2_out
+        else:
+            return main_out
 
 
 def wide_resnet28_10_selfdistill(
@@ -935,75 +816,340 @@ def wide_resnet28_10_selfdistill(
     drop_path_rate: float = 0.0,
 ) -> WideResNetSelfDistill:
     """
-    Wide ResNet-28-10 with Self-Distillation (BYOT).
+    Wide ResNet-28-10 with self-distillation support.
 
-    Target: F1 ≥ 0.85 (based on +3-4% improvement from paper)
+    Note: This variant did not improve performance in Phase 2.5.
+    Standard WRN-28-10 achieved F1=0.8131 vs F1=0.7968 for this variant.
+
+    Args:
+        num_classes: Number of output classes
+        dropout_rate: Dropout rate
+        drop_path_rate: Stochastic depth rate
+
+    Returns:
+        WRN-28-10 with auxiliary classifiers
     """
-    return WideResNetSelfDistill(28, 10, num_classes, dropout_rate, drop_path_rate)
-
-
-def wide_resnet40_10(
-    num_classes: int = 100,
-    dropout_rate: float = 0.3,
-    drop_path_rate: float = 0.0,
-) -> WideResNet:
-    """Wide ResNet-40-10 for CIFAR (55.8M params)."""
-    return WideResNet(40, 10, num_classes, dropout_rate, drop_path_rate)
-
-
-def wide_resnet28_12(
-    num_classes: int = 100,
-    dropout_rate: float = 0.3,
-    drop_path_rate: float = 0.0,
-) -> WideResNet:
-    """Wide ResNet-28-12 for CIFAR (52.8M params)."""
-    return WideResNet(28, 12, num_classes, dropout_rate, drop_path_rate)
+    return WideResNetSelfDistill(
+        depth=28,
+        widen_factor=10,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        drop_path_rate=drop_path_rate,
+    )
 
 
 # ============================================================================
-# Ensemble Model - Combines multiple models for ensemble prediction
+# PyramidNet - Gradually increasing channel dimensions
+# ============================================================================
+
+
+class PyramidBasicBlock(nn.Module):
+    """
+    Basic block for PyramidNet with gradually increasing channels.
+
+    Unlike ResNet which increases channels abruptly, PyramidNet gradually
+    increases the number of channels throughout the network.
+
+    Args:
+        in_channels: Number of input channels
+        out_channels: Number of output channels
+        stride: Stride for convolution
+        drop_path_rate: Stochastic depth rate
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        stride: int = 1,
+        drop_path_rate: float = 0.0,
+    ):
+        super().__init__()
+
+        self.bn1 = nn.BatchNorm2d(in_channels)
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
+        )
+
+        self.bn3 = nn.BatchNorm2d(out_channels)
+
+        # Stochastic depth
+        self.drop_path = (
+            DropPath(drop_path_rate) if drop_path_rate > 0 else nn.Identity()
+        )
+
+        # Skip connection with channel adjustment if needed
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.AvgPool2d(kernel_size=stride, stride=stride)
+                if stride != 1
+                else nn.Identity()
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(x))
+        out = self.conv1(out)
+
+        out = F.relu(self.bn2(out))
+        out = self.conv2(out)
+        out = self.bn3(out)
+
+        # Apply stochastic depth
+        out = self.drop_path(out)
+
+        # Handle skip connection with channel padding if needed
+        shortcut = self.shortcut(x)
+        if out.size(1) != shortcut.size(1):
+            # Pad channels with zeros to match
+            padding = torch.zeros(
+                shortcut.size(0),
+                out.size(1) - shortcut.size(1),
+                shortcut.size(2),
+                shortcut.size(3),
+                device=shortcut.device,
+                dtype=shortcut.dtype,
+            )
+            shortcut = torch.cat([shortcut, padding], dim=1)
+
+        out += shortcut
+        return out
+
+
+class PyramidNet(nn.Module):
+    """
+    PyramidNet architecture for CIFAR-100.
+
+    PyramidNet gradually increases the number of channels throughout the network,
+    rather than increasing them abruptly like ResNet.
+
+    Args:
+        depth: Total network depth
+        alpha: Widening factor (determines final channel count)
+        num_classes: Number of output classes
+        drop_path_rate: Maximum stochastic depth rate
+
+    Architecture:
+        - Initial channels: 16
+        - Gradually increases to: 16 + alpha
+        - Three groups with different spatial resolutions
+
+    Reference:
+        Han et al. "Deep Pyramidal Residual Networks" (CVPR 2017)
+        https://arxiv.org/abs/1610.02915
+    """
+
+    def __init__(
+        self,
+        depth: int = 110,
+        alpha: int = 270,
+        num_classes: int = 100,
+        drop_path_rate: float = 0.0,
+    ):
+        super().__init__()
+
+        # Calculate number of blocks per group
+        assert (depth - 2) % 6 == 0, "depth should be 6n+2 (e.g., 110, 164)"
+        n = (depth - 2) // 6
+
+        # Initial channels
+        self.in_channels = 16
+
+        # Initial convolution
+        self.conv1 = nn.Conv2d(
+            3, self.in_channels, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(self.in_channels)
+
+        # Calculate channel increments
+        add_per_block = alpha / (3 * n)
+
+        # Calculate stochastic depth rates
+        total_blocks = 3 * n
+        drop_rates = [drop_path_rate * i / total_blocks for i in range(total_blocks)]
+
+        # Three groups
+        self.layer1 = self._make_layer(
+            PyramidBasicBlock,
+            n,
+            add_per_block,
+            stride=1,
+            drop_rates=drop_rates[0:n],
+        )
+        self.layer2 = self._make_layer(
+            PyramidBasicBlock,
+            n,
+            add_per_block,
+            stride=2,
+            drop_rates=drop_rates[n : 2 * n],
+        )
+        self.layer3 = self._make_layer(
+            PyramidBasicBlock,
+            n,
+            add_per_block,
+            stride=2,
+            drop_rates=drop_rates[2 * n :],
+        )
+
+        # Final layers
+        self.bn_final = nn.BatchNorm2d(int(round(16 + alpha)))
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(int(round(16 + alpha)), num_classes)
+
+        # Initialize weights
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                nn.init.constant_(m.bias, 0)
+
+    def _make_layer(
+        self,
+        block: Type[PyramidBasicBlock],
+        num_blocks: int,
+        add_per_block: float,
+        stride: int,
+        drop_rates: List[float],
+    ):
+        layers = []
+
+        for i in range(num_blocks):
+            # Calculate output channels for this block
+            out_channels = int(round(self.in_channels + add_per_block))
+
+            # Add block
+            layers.append(
+                block(
+                    self.in_channels,
+                    out_channels,
+                    stride if i == 0 else 1,
+                    drop_rates[i],
+                )
+            )
+
+            # Update in_channels for next block
+            self.in_channels = out_channels
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+
+        x = F.relu(self.bn_final(x))
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+
+def pyramidnet110_270(
+    num_classes: int = 100,
+    drop_path_rate: float = 0.0,
+) -> PyramidNet:
+    """
+    PyramidNet-110 (alpha=270) for CIFAR-100.
+
+    Args:
+        num_classes: Number of output classes
+        drop_path_rate: Stochastic depth rate (recommended: 0.15)
+
+    Returns:
+        PyramidNet-110 model instance
+
+    Model Statistics:
+        - Parameters: ~26M
+        - Paper reported accuracy: 83% on CIFAR-100
+    """
+    return PyramidNet(
+        depth=110,
+        alpha=270,
+        num_classes=num_classes,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+def pyramidnet164_270(
+    num_classes: int = 100,
+    drop_path_rate: float = 0.0,
+) -> PyramidNet:
+    """
+    PyramidNet-164 (alpha=270) for CIFAR-100.
+
+    Deeper variant with potentially better capacity.
+
+    Args:
+        num_classes: Number of output classes
+        drop_path_rate: Stochastic depth rate (recommended: 0.15)
+
+    Returns:
+        PyramidNet-164 model instance
+
+    Model Statistics:
+        - Parameters: ~26M
+        - Deeper than PyramidNet-110
+    """
+    return PyramidNet(
+        depth=164,
+        alpha=270,
+        num_classes=num_classes,
+        drop_path_rate=drop_path_rate,
+    )
+
+
+# ============================================================================
+# Ensemble Models
 # ============================================================================
 
 
 class EnsembleModel(nn.Module):
     """
-    Ensemble model that combines multiple trained models via soft voting.
+    Ensemble multiple models for improved prediction.
 
-    Acts as a single model but internally runs multiple models and averages predictions.
-    Compatible with standard evaluate() function.
+    Combines predictions from multiple models by averaging their outputs.
+    Used in Phase 1 for final submission.
+
+    Args:
+        models: List of model instances to ensemble
+
+    Example:
+        >>> model1 = wide_resnet28_10()
+        >>> model2 = wide_resnet28_12()
+        >>> model3 = pyramidnet110_270()
+        >>> ensemble = EnsembleModel([model1, model2, model3])
     """
 
-    def __init__(self, models: List[nn.Module]) -> None:
-        """
-        Initialize ensemble model.
-
-        Args:
-            models: List of trained models (should all have same architecture)
-        """
+    def __init__(self, models: List[nn.Module]):
         super().__init__()
         self.models = nn.ModuleList(models)
-        self.num_models = len(models)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through ensemble (soft voting).
-
-        Args:
-            x: Input tensor [batch_size, C, H, W]
-
-        Returns:
-            Averaged logits [batch_size, num_classes]
-        """
-        # Get predictions from all models
+    def forward(self, x):
+        """Average predictions from all models."""
         outputs = []
         for model in self.models:
-            out = model(x)
-            outputs.append(out)
+            outputs.append(model(x))
 
-        # Average logits (soft voting)
-        ensemble_output = torch.stack(outputs).mean(dim=0)
-
-        return ensemble_output
+        # Average the outputs
+        return torch.stack(outputs).mean(dim=0)
 
     def train(self, mode: bool = True):
         """Set ensemble to train/eval mode."""
@@ -1029,11 +1175,9 @@ def create_model(
         "wide_resnet28_12",
         "pyramidnet110_270",
         "pyramidnet164_270",
-        "efficientnet_b0",
-        "efficientnet_b1",
-        "efficientnet_b2",
-        "efficientnet_b3",
-        "efficientnet_b4",
+        "convmixer_768_32",
+        "convmixer_1536_20",
+        "convmixer_1024_20",
     ] = "wide_resnet28_10",
     dropout_rate: float = 0.3,
     drop_path_rate: float = 0.0,
@@ -1048,15 +1192,14 @@ def create_model(
         num_classes: Number of output classes (100 for CIFAR-100)
         device: Device to place the model on ('cuda' or 'cpu')
         model_type: Type of model architecture to use. Options:
+            Phase 3 (ConvMixer - NEW, target F1≥0.85):
+            - "convmixer_768_32": ConvMixer-768/32 (21M params) ← Recommended
+            - "convmixer_1536_20": ConvMixer-1536/20 (52M params, highest capacity)
+            - "convmixer_1024_20": ConvMixer-1024/20 (24M params, balanced)
+
             Phase 1 (proven):
             - "wide_resnet28_10": WRN-28-10 (36.5M params, F1=0.8131) ← Phase 1 best
-
-            Phase 3 (EfficientNet family, target F1≥0.85):
-            - "efficientnet_b0": 4.1M params, 4-6GB memory, F1=0.83-0.85
-            - "efficientnet_b1": 6.7M params, 6-8GB memory, F1=0.85-0.87 ← Recommended
-            - "efficientnet_b2": 8.0M params, 8-10GB memory, F1=0.86-0.88
-            - "efficientnet_b3": 10.8M params, 10-12GB memory, F1=0.87-0.89
-            - "efficientnet_b4": 17.8M params, 12-15GB memory, F1=0.88-0.90
+            - "wide_resnet28_12": WRN-28-12 (52.8M params, F1=0.82)
 
             Phase 2.7 (PyramidNet):
             - "pyramidnet110_270": PyramidNet-110 (26M params, paper: 83% acc)
@@ -1067,22 +1210,20 @@ def create_model(
 
             Others:
             - "wide_resnet40_10": WRN-40-10 (55.8M params)
-            - "wide_resnet28_12": WRN-28-12 (52.8M params, F1=0.82)
             - "resnet34": ResNet-34 (21M params, F1=0.77)
             - "resnet50": ResNet-50 (23.5M params, F1=0.77)
-        dropout_rate: Dropout rate (only for ResNet/Wide ResNet, ignored by EfficientNet)
-        drop_path_rate: Stochastic depth rate (best: 0.1 for WRN, 0.2 for EfficientNet)
-        input_size: Input image size (32 for most models, 64 recommended for EfficientNet)
+        dropout_rate: Dropout rate (ignored by ConvMixer and PyramidNet)
+        drop_path_rate: Stochastic depth rate (ignored by ConvMixer)
+        input_size: Input image size (32 for all models)
 
     Returns:
         Model instance moved to the specified device
 
     Example:
+        >>> # Phase 3 ConvMixer (target F1≥0.85)
+        >>> model = create_model(100, 'cuda', 'convmixer_768_32')
         >>> # Phase 1 best (F1=0.8131)
         >>> model = create_model(100, 'cuda', 'wide_resnet28_10', drop_path_rate=0.1)
-        >>>
-        >>> # Phase 3 recommended (F1≥0.85)
-        >>> model = create_model(100, 'cuda', 'efficientnet_b1', drop_path_rate=0.2, input_size=64)
     """
     # Create model from scratch
     if model_type == "resnet34":
@@ -1123,41 +1264,12 @@ def create_model(
             num_classes=num_classes,
             drop_path_rate=drop_path_rate,
         )
-    elif model_type == "efficientnet_b0":
-        model = efficientnet_b0(
-            num_classes=num_classes,
-            input_size=input_size,
-            dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate,
-        )
-    elif model_type == "efficientnet_b1":
-        model = efficientnet_b1(
-            num_classes=num_classes,
-            input_size=input_size,
-            dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate,
-        )
-    elif model_type == "efficientnet_b2":
-        model = efficientnet_b2(
-            num_classes=num_classes,
-            input_size=input_size,
-            dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate,
-        )
-    elif model_type == "efficientnet_b3":
-        model = efficientnet_b3(
-            num_classes=num_classes,
-            input_size=input_size,
-            dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate,
-        )
-    elif model_type == "efficientnet_b4":
-        model = efficientnet_b4(
-            num_classes=num_classes,
-            input_size=input_size,
-            dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate,
-        )
+    elif model_type == "convmixer_768_32":
+        model = convmixer_768_32(num_classes=num_classes)
+    elif model_type == "convmixer_1536_20":
+        model = convmixer_1536_20(num_classes=num_classes)
+    elif model_type == "convmixer_1024_20":
+        model = convmixer_1024_20(num_classes=num_classes)
     else:
         raise ValueError(
             f"Unknown model_type: {model_type}. "
@@ -1165,8 +1277,7 @@ def create_model(
             f"'wide_resnet28_10', 'wide_resnet28_10_selfdistill', "
             f"'wide_resnet40_10', 'wide_resnet28_12', "
             f"'pyramidnet110_270', 'pyramidnet164_270', "
-            f"'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2', "
-            f"'efficientnet_b3', 'efficientnet_b4'"
+            f"'convmixer_768_32', 'convmixer_1536_20', 'convmixer_1024_20'"
         )
 
     model = model.to(device)
@@ -1175,311 +1286,129 @@ def create_model(
 
 
 # ============================================================================
-# EfficientNet - Efficient Scaling for CIFAR-100 (Phase 3)
+# ConvMixer - Simple Yet Effective Patch-based Architecture (Phase 3)
 # ============================================================================
 
 
-class Swish(nn.Module):
+class Residual(nn.Module):
     """
-    Swish activation function: x * sigmoid(x)
+    Residual wrapper that applies fn(x) + x.
 
-    Used in EfficientNet, smoother and more effective than ReLU.
-
-    Reference:
-        Ramachandran et al. "Searching for Activation Functions" (2017)
-        https://arxiv.org/abs/1710.05941
-
-    Example:
-        >>> act = Swish()
-        >>> x = torch.randn(2, 10)
-        >>> y = act(x)
-    """
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of Swish activation."""
-        return x * torch.sigmoid(x)
-
-
-class SEBlock(nn.Module):
-    """
-    Squeeze-and-Excitation block for channel attention.
-
-    Adaptively recalibrates channel-wise feature responses by explicitly
-    modeling interdependencies between channels.
+    This is a simple helper module for residual connections in ConvMixer.
 
     Args:
-        channels: Number of input channels
-        reduction: Reduction ratio for squeeze operation (default: 4)
-
-    Reference:
-        Hu et al. "Squeeze-and-Excitation Networks" (CVPR 2018)
-        https://arxiv.org/abs/1709.01507
-
-    Example:
-        >>> se = SEBlock(channels=64, reduction=4)
-        >>> x = torch.randn(2, 64, 8, 8)
-        >>> y = se(x)
-        >>> assert y.shape == x.shape
+        fn: The function/module to apply
     """
 
-    def __init__(self, channels: int, reduction: int = 4) -> None:
+    def __init__(self, fn: nn.Module):
         super().__init__()
-        self.squeeze = nn.AdaptiveAvgPool2d(1)
-        reduced_channels = max(1, channels // reduction)
-        self.excitation = nn.Sequential(
-            nn.Linear(channels, reduced_channels, bias=True),  # Fix: use bias=True
-            Swish(),
-            nn.Linear(reduced_channels, channels, bias=True),  # Fix: use bias=True
-            nn.Sigmoid(),
-        )
+        self.fn = fn
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-
-        Args:
-            x: Input tensor [batch_size, channels, height, width]
-
-        Returns:
-            Recalibrated tensor with same shape as input
-        """
-        b, c, _, _ = x.size()
-        # Squeeze: global average pooling
-        y = self.squeeze(x).view(b, c)
-        # Excitation: channel-wise attention
-        y = self.excitation(y).view(b, c, 1, 1)
-        # Scale: element-wise multiplication
-        return x * y.expand_as(x)
+        """Apply fn(x) + x."""
+        return self.fn(x) + x
 
 
-class MBConvBlock(nn.Module):
+class ConvMixer(nn.Module):
     """
-    Mobile Inverted Bottleneck Convolution block.
+    ConvMixer architecture for CIFAR-100 (trained from scratch).
 
-    Structure: Expansion → Depthwise Conv → SE → Projection
+    ConvMixer is an extremely simple architecture that:
+    1. Uses patch embeddings like ViT
+    2. Separates spatial and channel mixing
+    3. Uses only standard convolutions (no self-attention)
+
+    Despite its simplicity, it achieves competitive results with more complex
+    architectures like ViT and MLP-Mixer.
 
     Args:
-        in_channels: Number of input channels
-        out_channels: Number of output channels
-        kernel_size: Kernel size for depthwise conv (3 or 5)
-        stride: Stride for depthwise conv (1 or 2)
-        expand_ratio: Expansion ratio for hidden dimension
-        se_ratio: SE reduction ratio (default: 0.25, 4x reduction)
-        drop_path_rate: Drop path rate for stochastic depth
-
-    Reference:
-        Sandler et al. "MobileNetV2" (CVPR 2018)
-        Tan & Le "EfficientNet" (ICML 2019)
-        https://arxiv.org/abs/1905.11946
-
-    Example:
-        >>> block = MBConvBlock(32, 64, kernel_size=3, stride=1, expand_ratio=6)
-        >>> x = torch.randn(2, 32, 8, 8)
-        >>> y = block(x)
-        >>> assert y.shape == (2, 64, 8, 8)
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int,
-        expand_ratio: int,
-        se_ratio: float = 0.25,
-        drop_path_rate: float = 0.0,
-    ) -> None:
-        super().__init__()
-        self.use_residual = stride == 1 and in_channels == out_channels
-        hidden_dim = in_channels * expand_ratio
-
-        layers: List[nn.Module] = []
-
-        # Expansion phase (if expand_ratio != 1)
-        if expand_ratio != 1:
-            layers.extend(
-                [
-                    nn.Conv2d(in_channels, hidden_dim, 1, bias=False),
-                    nn.BatchNorm2d(hidden_dim),
-                    Swish(),
-                ]
-            )
-
-        # Depthwise convolution
-        layers.extend(
-            [
-                nn.Conv2d(
-                    hidden_dim,
-                    hidden_dim,
-                    kernel_size,
-                    stride,
-                    kernel_size // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                Swish(),
-            ]
-        )
-
-        # Squeeze-and-Excitation
-        if se_ratio > 0:
-            se_channels = max(1, int(in_channels * se_ratio))
-            layers.append(SEBlock(hidden_dim, hidden_dim // se_channels))
-
-        # Output projection
-        layers.extend(
-            [
-                nn.Conv2d(hidden_dim, out_channels, 1, bias=False),
-                nn.BatchNorm2d(out_channels),
-            ]
-        )
-
-        self.conv = nn.Sequential(*layers)
-        self.drop_path = (
-            DropPath(drop_path_rate) if drop_path_rate > 0 else nn.Identity()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-
-        Args:
-            x: Input tensor [batch_size, in_channels, height, width]
-
-        Returns:
-            Output tensor [batch_size, out_channels, height', width']
-        """
-        if self.use_residual:
-            return x + self.drop_path(self.conv(x))
-        return self.conv(x)
-
-
-class EfficientNet(nn.Module):
-    """
-    EfficientNet architecture for CIFAR-100 (trained from scratch).
-
-    Adapted for 64×64 input (upscaled from CIFAR-100's original 32×32).
-    Uses compound scaling to balance depth, width, and resolution.
-
-    Args:
-        width_mult: Width multiplier (1.0 for B0, 1.1 for B1, etc.)
-        depth_mult: Depth multiplier (1.0 for B0, 1.1 for B1, etc.)
-        input_size: Input image size (32, 64, or 96)
+        dim: Hidden dimension (number of channels)
+        depth: Number of ConvMixer blocks
+        kernel_size: Kernel size for depthwise convolution (spatial mixing)
+        patch_size: Patch size for initial embedding (stride of patch conv)
         num_classes: Number of output classes (100 for CIFAR-100)
-        dropout_rate: Dropout rate before classifier
-        drop_path_rate: Maximum drop path rate (stochastic depth)
+
+    Architecture:
+        1. Patch Embedding: Conv2d(3, dim, kernel=patch_size, stride=patch_size)
+        2. Repeat depth times:
+           a. Depthwise Conv (spatial mixing) + Residual
+           b. Pointwise Conv (channel mixing)
+        3. Global Average Pooling + Linear classifier
 
     Reference:
-        Tan & Le "EfficientNet: Rethinking Model Scaling for CNNs" (ICML 2019)
-        https://arxiv.org/abs/1905.11946
-
-        Paper reports CIFAR-100 accuracy: 91.7% (from scratch training)
+        Trockman & Kolter "Patches Are All You Need?" (ICLR 2022)
+        https://openreview.net/forum?id=TVHS5Y4dNvM
+        https://github.com/locuslab/convmixer
 
     Example:
-        >>> model = EfficientNet(width_mult=1.0, depth_mult=1.0, input_size=64)
-        >>> x = torch.randn(2, 3, 64, 64)
+        >>> model = ConvMixer(dim=768, depth=32, kernel_size=7, patch_size=2)
+        >>> x = torch.randn(2, 3, 32, 32)
         >>> y = model(x)
         >>> assert y.shape == (2, 100)
-        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-        Parameters: 5.30M
     """
 
     def __init__(
         self,
-        width_mult: float = 1.0,
-        depth_mult: float = 1.0,
-        input_size: int = 64,
+        dim: int,
+        depth: int,
+        kernel_size: int = 9,
+        patch_size: int = 7,
         num_classes: int = 100,
-        dropout_rate: float = 0.2,
-        drop_path_rate: float = 0.2,
-    ) -> None:
+    ):
         super().__init__()
 
-        # Building blocks config: [expand_ratio, channels, num_layers, stride, kernel_size]
-        blocks_args = [
-            [1, 16, 1, 1, 3],  # Stage 1
-            [6, 24, 2, 2, 3],  # Stage 2
-            [6, 40, 2, 2, 5],  # Stage 3
-            [6, 80, 3, 2, 3],  # Stage 4
-            [6, 112, 3, 1, 5],  # Stage 5
-            [6, 192, 4, 2, 5],  # Stage 6
-            [6, 320, 1, 1, 3],  # Stage 7
-        ]
-
-        # Stem
-        stem_channels = self._round_filters(32, width_mult)
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, stem_channels, 3, 2, 1, bias=False),
-            nn.BatchNorm2d(stem_channels),
-            Swish(),
+        # Patch embedding: project input to dim channels with patch_size stride
+        self.patch_embed = nn.Sequential(
+            nn.Conv2d(3, dim, kernel_size=patch_size, stride=patch_size),
+            nn.GELU(),
+            nn.BatchNorm2d(dim),
         )
 
-        # Build MBConv blocks
-        blocks: List[nn.Module] = []
-        total_blocks = sum([self._round_repeats(b[2], depth_mult) for b in blocks_args])
-        block_idx = 0
-        in_channels = stem_channels
-
-        for expand_ratio, channels, num_layers, stride, kernel_size in blocks_args:
-            out_channels = self._round_filters(channels, width_mult)
-            num_layers = self._round_repeats(num_layers, depth_mult)
-
-            for i in range(num_layers):
-                # Stochastic depth: linearly increase drop rate
-                drop_rate = drop_path_rate * block_idx / total_blocks
-
-                blocks.append(
-                    MBConvBlock(
-                        in_channels=in_channels,
-                        out_channels=out_channels,
-                        kernel_size=kernel_size,
-                        stride=stride if i == 0 else 1,
-                        expand_ratio=expand_ratio,
-                        se_ratio=0.25,
-                        drop_path_rate=drop_rate,
+        # ConvMixer blocks: alternate between spatial and channel mixing
+        blocks = []
+        for _ in range(depth):
+            # Spatial mixing: depthwise convolution with residual
+            blocks.append(
+                Residual(
+                    nn.Sequential(
+                        nn.Conv2d(
+                            dim,
+                            dim,
+                            kernel_size=kernel_size,
+                            groups=dim,  # Depthwise
+                            padding=kernel_size // 2,
+                        ),
+                        nn.GELU(),
+                        nn.BatchNorm2d(dim),
                     )
                 )
+            )
 
-                in_channels = out_channels
-                block_idx += 1
+            # Channel mixing: pointwise convolution (1x1)
+            blocks.append(
+                nn.Sequential(
+                    nn.Conv2d(dim, dim, kernel_size=1),
+                    nn.GELU(),
+                    nn.BatchNorm2d(dim),
+                )
+            )
 
         self.blocks = nn.Sequential(*blocks)
 
-        # Head
-        final_channels = self._round_filters(1280, width_mult)
+        # Classifier
         self.head = nn.Sequential(
-            nn.Conv2d(in_channels, final_channels, 1, bias=False),
-            nn.BatchNorm2d(final_channels),
-            Swish(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Dropout(dropout_rate),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(dim, num_classes),
         )
 
-        self.classifier = nn.Linear(final_channels, num_classes)
-
+        # Initialize weights
         self._initialize_weights()
 
-    def _round_filters(self, filters: int, width_mult: float, divisor: int = 8) -> int:
-        """Round number of filters based on width multiplier."""
-        filters_float = filters * width_mult
-        new_filters = max(
-            divisor, int(filters_float + divisor / 2) // divisor * divisor
-        )
-        # Make sure that round down does not go down by more than 10%
-        if new_filters < 0.9 * filters_float:
-            new_filters += divisor
-        return int(new_filters)
-
-    def _round_repeats(self, repeats: int, depth_mult: float) -> int:
-        """Round number of repeats based on depth multiplier."""
-        return int(math.ceil(depth_mult * repeats))
-
     def _initialize_weights(self) -> None:
-        """Initialize model weights (adapted for Swish activation function)."""
+        """Initialize model weights using standard techniques."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                # Fix: Swish is similar to ReLU, but standard init is safer
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
@@ -1487,11 +1416,8 @@ class EfficientNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
-                # Fix: SE Block Linear layers need more reasonable initialization
-                # Use Xavier uniform (Glorot) initialization
-                nn.init.xavier_uniform_(m.weight)
+                nn.init.normal_(m.weight, 0, 0.01)
                 if m.bias is not None:
-                    # Don't set positive bias, let model learn it
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1499,247 +1425,122 @@ class EfficientNet(nn.Module):
         Forward pass.
 
         Args:
-            x: Input tensor [batch_size, 3, input_size, input_size]
+            x: Input tensor [batch_size, 3, height, width]
 
         Returns:
             Logits [batch_size, num_classes]
         """
-        x = self.stem(x)
+        x = self.patch_embed(x)
         x = self.blocks(x)
         x = self.head(x)
-        x = x.flatten(1)
-        x = self.classifier(x)
         return x
 
 
-def efficientnet_b0(
-    num_classes: int = 100,
-    input_size: int = 64,
-    dropout_rate: float = 0.2,
-    drop_path_rate: float = 0.2,
-) -> EfficientNet:
+def convmixer_768_32(num_classes: int = 100) -> ConvMixer:
     """
-    EfficientNet-B0 for CIFAR-100 (trained from scratch).
+    ConvMixer-768/32 for CIFAR-100 (trained from scratch).
 
-    Lightest EfficientNet variant. Good starting point for CIFAR-100.
+    Medium-sized ConvMixer variant from the original paper.
 
     Args:
         num_classes: Number of output classes (100 for CIFAR-100)
-        input_size: Input image size (recommended: 64 for best results)
-        dropout_rate: Dropout rate before classifier (default: 0.2)
-        drop_path_rate: Stochastic depth rate (default: 0.2)
 
     Returns:
-        EfficientNet-B0 model instance
+        ConvMixer-768/32 model instance
 
     Model Statistics:
-        - Parameters: ~4.1M (CIFAR-100), ~5.3M (ImageNet 1000-class)
-        - FLOPs (64×64): ~0.4G
-        - Memory: ~4-6GB (batch_size=128)
-        - Expected F1 (64×64): 0.83-0.85
-        - Training time: 4-5h (600 epochs, early stopping)
+        - Parameters: ~21M
+        - Hidden dim: 768
+        - Depth: 32 blocks
+        - Kernel size: 7
+        - Patch size: 2 (32x32 → 16x16 patches)
+        - Expected F1: 0.83-0.85
+        - Training time: ~6-8 hours (600 epochs)
+
+    Paper Results (ImageNet, from scratch):
+        - Top-1 Accuracy: 80.2%
 
     Reference:
-        Tan & Le "EfficientNet" (ICML 2019)
-        https://arxiv.org/abs/1905.11946
-
-    Example:
-        >>> model = efficientnet_b0(input_size=64)
-        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-        Parameters: 4.13M
+        https://github.com/locuslab/convmixer (official implementation)
     """
-    return EfficientNet(
-        width_mult=1.0,
-        depth_mult=1.0,
-        input_size=input_size,
+    return ConvMixer(
+        dim=768,
+        depth=32,
+        kernel_size=7,
+        patch_size=2,  # Adapted for CIFAR-100's 32x32 input
         num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        drop_path_rate=drop_path_rate,
     )
 
 
-def efficientnet_b1(
-    num_classes: int = 100,
-    input_size: int = 64,
-    dropout_rate: float = 0.2,
-    drop_path_rate: float = 0.2,
-) -> EfficientNet:
+def convmixer_1536_20(num_classes: int = 100) -> ConvMixer:
     """
-    EfficientNet-B1 for CIFAR-100 (trained from scratch).
+    ConvMixer-1536/20 for CIFAR-100 (trained from scratch).
 
-    Slightly larger than B0, better accuracy with moderate resource increase.
+    Largest ConvMixer variant from the original paper.
+    Wider but shallower than 768/32.
 
     Args:
         num_classes: Number of output classes (100 for CIFAR-100)
-        input_size: Input image size (recommended: 64 or 96)
-        dropout_rate: Dropout rate before classifier (default: 0.2)
-        drop_path_rate: Stochastic depth rate (default: 0.2)
 
     Returns:
-        EfficientNet-B1 model instance
+        ConvMixer-1536/20 model instance
 
     Model Statistics:
-        - Parameters: ~6.7M (CIFAR-100), ~7.8M (ImageNet)
-        - FLOPs (64×64): ~0.7G
-        - Memory: ~6-8GB (batch_size=128)
-        - Expected F1 (64×64): 0.85-0.87
-        - Training time: 5-6h (600 epochs)
+        - Parameters: ~52M
+        - Hidden dim: 1536
+        - Depth: 20 blocks
+        - Kernel size: 9
+        - Patch size: 2 (32x32 → 16x16 patches)
+        - Expected F1: 0.84-0.86
+        - Training time: ~8-10 hours (600 epochs)
 
-    Scaling:
-        - Width multiplier: 1.0
-        - Depth multiplier: 1.1 (10% more layers)
+    Paper Results (ImageNet, from scratch):
+        - Top-1 Accuracy: 81.4%
 
-    Example:
-        >>> model = efficientnet_b1(input_size=64)
-        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-        Parameters: 6.69M
+    Reference:
+        https://github.com/locuslab/convmixer (official implementation)
     """
-    return EfficientNet(
-        width_mult=1.0,
-        depth_mult=1.1,
-        input_size=input_size,
+    return ConvMixer(
+        dim=1536,
+        depth=20,
+        kernel_size=9,
+        patch_size=2,  # Adapted for CIFAR-100's 32x32 input
         num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        drop_path_rate=drop_path_rate,
     )
 
 
-def efficientnet_b2(
-    num_classes: int = 100,
-    input_size: int = 64,
-    dropout_rate: float = 0.3,
-    drop_path_rate: float = 0.2,
-) -> EfficientNet:
+def convmixer_1024_20(num_classes: int = 100) -> ConvMixer:
     """
-    EfficientNet-B2 for CIFAR-100 (trained from scratch).
+    ConvMixer-1024/20 for CIFAR-100 (trained from scratch).
 
-    Larger model with better capacity. Good balance of accuracy and speed.
+    Balanced variant with good capacity and efficiency.
 
     Args:
         num_classes: Number of output classes (100 for CIFAR-100)
-        input_size: Input image size (recommended: 64 or 96)
-        dropout_rate: Dropout rate before classifier (default: 0.3)
-        drop_path_rate: Stochastic depth rate (default: 0.2)
 
     Returns:
-        EfficientNet-B2 model instance
+        ConvMixer-1024/20 model instance
 
     Model Statistics:
-        - Parameters: ~8.0M (CIFAR-100), ~9.2M (ImageNet)
-        - FLOPs (64×64): ~1.0G
-        - Memory: ~8-10GB (batch_size=128)
-        - Expected F1 (64×64): 0.86-0.88
-        - Training time: 6-7h (600 epochs)
+        - Parameters: ~24M
+        - Hidden dim: 1024
+        - Depth: 20 blocks
+        - Kernel size: 9
+        - Patch size: 4 (32x32 → 8x8 patches)
+        - Expected F1: 0.83-0.85
+        - Training time: ~7-9 hours (600 epochs)
 
-    Scaling:
-        - Width multiplier: 1.1 (10% wider channels)
-        - Depth multiplier: 1.2 (20% more layers)
+    Note:
+        This variant uses patch_size=4 for a different patch granularity,
+        potentially capturing different levels of detail.
 
-    Example:
-        >>> model = efficientnet_b2(input_size=64)
-        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-        Parameters: 8.02M
+    Reference:
+        Adapted from https://github.com/locuslab/convmixer
     """
-    return EfficientNet(
-        width_mult=1.1,
-        depth_mult=1.2,
-        input_size=input_size,
+    return ConvMixer(
+        dim=1024,
+        depth=20,
+        kernel_size=9,
+        patch_size=4,  # Larger patch size for different granularity
         num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        drop_path_rate=drop_path_rate,
-    )
-
-
-def efficientnet_b3(
-    num_classes: int = 100,
-    input_size: int = 64,
-    dropout_rate: float = 0.3,
-    drop_path_rate: float = 0.2,
-) -> EfficientNet:
-    """
-    EfficientNet-B3 for CIFAR-100 (trained from scratch).
-
-    Larger capacity model for higher accuracy targets.
-
-    Args:
-        num_classes: Number of output classes (100 for CIFAR-100)
-        input_size: Input image size (recommended: 64 or 96)
-        dropout_rate: Dropout rate before classifier (default: 0.3)
-        drop_path_rate: Stochastic depth rate (default: 0.2)
-
-    Returns:
-        EfficientNet-B3 model instance
-
-    Model Statistics:
-        - Parameters: ~10.8M (CIFAR-100), ~12M (ImageNet)
-        - FLOPs (64×64): ~1.8G
-        - Memory: ~10-12GB (batch_size=96)
-        - Expected F1 (64×64): 0.87-0.89
-        - Training time: 7-9h (600 epochs)
-
-    Scaling:
-        - Width multiplier: 1.2 (20% wider channels)
-        - Depth multiplier: 1.4 (40% more layers)
-
-    Example:
-        >>> model = efficientnet_b3(input_size=64)
-        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-        Parameters: 10.78M
-    """
-    return EfficientNet(
-        width_mult=1.2,
-        depth_mult=1.4,
-        input_size=input_size,
-        num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        drop_path_rate=drop_path_rate,
-    )
-
-
-def efficientnet_b4(
-    num_classes: int = 100,
-    input_size: int = 64,
-    dropout_rate: float = 0.4,
-    drop_path_rate: float = 0.2,
-) -> EfficientNet:
-    """
-    EfficientNet-B4 for CIFAR-100 (trained from scratch).
-
-    Largest practical EfficientNet for 16GB GPU. Maximum accuracy potential.
-
-    Args:
-        num_classes: Number of output classes (100 for CIFAR-100)
-        input_size: Input image size (recommended: 64 or 96)
-        dropout_rate: Dropout rate before classifier (default: 0.4)
-        drop_path_rate: Stochastic depth rate (default: 0.2)
-
-    Returns:
-        EfficientNet-B4 model instance
-
-    Model Statistics:
-        - Parameters: ~17.8M (CIFAR-100), ~19M (ImageNet)
-        - FLOPs (64×64): ~4.2G
-        - Memory: ~12-15GB (batch_size=64)
-        - Expected F1 (64×64): 0.88-0.90
-        - Training time: 10-12h (600 epochs)
-
-    Scaling:
-        - Width multiplier: 1.4 (40% wider channels)
-        - Depth multiplier: 1.8 (80% more layers)
-
-    Warning:
-        Requires significant memory. Reduce batch_size if OOM occurs.
-
-    Example:
-        >>> model = efficientnet_b4(input_size=64)
-        >>> print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-        Parameters: 17.82M
-    """
-    return EfficientNet(
-        width_mult=1.4,
-        depth_mult=1.8,
-        input_size=input_size,
-        num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        drop_path_rate=drop_path_rate,
     )
