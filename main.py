@@ -129,7 +129,7 @@ def parse_args():
     parser.add_argument(
         "--mixup_alpha",
         type=float,
-        default=0.25,
+        default=0.8,  # old: 0.25
         help="Mixup alpha parameter (default: 0.4). "
         "Recommended: 1.0 for CIFAR-100. "
         "Mixup mixes training examples to improve generalization. "
@@ -147,7 +147,7 @@ def parse_args():
     parser.add_argument(
         "--cutmix_alpha",
         type=float,
-        default=0.65,
+        default=1.0,  # old: 0.65
         help="CutMix alpha parameter (default: 1.0 = recommended for CIFAR-100). "
         "Controls the size distribution of cut regions. "
         "1.0 is the standard setting from the paper. "
@@ -230,7 +230,12 @@ def parse_args():
         default=600,  # 400
         help="Number of training epochs",
     )
-    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.002,  # old: 0.001
+        help="Learning rate",
+    )
     parser.add_argument(
         "--weight_decay", type=float, default=1e-3, help="Weight decay (L2 penalty)"
     )
@@ -274,7 +279,7 @@ def parse_args():
     parser.add_argument(
         "--use_class_weights",
         action="store_true",
-        default=True,
+        default=False,  # ConvMixer does not use class weights
         help="Use class weights to adjust focus on different classes",
     )
     parser.add_argument(
@@ -287,7 +292,7 @@ def parse_args():
         "--weight_strategy",
         type=str,
         choices=["uniform", "long_board", "long_board_v2", "long_board_v2.5"],
-        default="long_board",
+        default="uniform",  # ConvMixer does not use class weights
         help="Class weighting strategy. Options: "
         "'uniform' (all weights=1.0), "
         "'long_board' (conservative, weight range 0.75-1.6), "
@@ -609,21 +614,38 @@ def build_model(args) -> Tuple[nn.Module, nn.Module]:
 
 
 def train(args, model: nn.Module, original_model: nn.Module):
-    # Disable `label-smoothing` while using `CutMix` or `Mixup`
-    if (args.use_cutmix and args.cutmix_alpha > 0) or args.mixup_alpha > 0:
-        args.label_smoothing = 0.0
+    # Label smoothing should be activated for ConvMixer models
+    if args.model.startswith("convmixer"):
+        # ConvMixer: Keep label_smoothing enabled even with Mixup/CutMix
         if args.use_cutmix and args.cutmix_alpha > 0 and args.mixup_alpha > 0:
-            logger.info("--label_smoothing disabled while using Mixup + CutMix")
-            logger.info("Using ADAPTIVE augmentation strategy (category-aware):")
+            logger.info("Using UNIFORM augmentation strategy for ConvMixer:")
+            logger.info("  • 50% Mixup (alpha={:.1f})".format(args.mixup_alpha))
+            logger.info("  • 50% CutMix (alpha={:.1f})".format(args.cutmix_alpha))
             logger.info(
-                "  • Detail-sensitive (human/small animals): Mixup only (alpha=0.4)"
+                "  • Label smoothing: {:.2f} (ENABLED)".format(args.label_smoothing)
             )
-            logger.info("  • Local-feature (mechanical/plants): 80% CutMix, 20% Mixup")
-            logger.info("  • Mixed-strategy (others): 30% Mixup, 70% CutMix")
         elif args.use_cutmix and args.cutmix_alpha > 0:
-            logger.info("--label_smoothing disabled while using CutMix")
+            logger.info(f"Using CutMix only (alpha={args.cutmix_alpha:.1f})")
         elif args.mixup_alpha > 0:
-            logger.info("--label_smoothing disabled while using Mixup")
+            logger.info(f"Using Mixup only (alpha={args.mixup_alpha:.1f})")
+    else:
+        # Other models: Disable label_smoothing while using CutMix or Mixup
+        if (args.use_cutmix and args.cutmix_alpha > 0) or args.mixup_alpha > 0:
+            args.label_smoothing = 0.0
+            if args.use_cutmix and args.cutmix_alpha > 0 and args.mixup_alpha > 0:
+                logger.info("--label_smoothing disabled while using Mixup + CutMix")
+                logger.info("Using ADAPTIVE augmentation strategy (category-aware):")
+                logger.info(
+                    "  • Detail-sensitive (human/small animals): Mixup only (alpha=0.4)"
+                )
+                logger.info(
+                    "  • Local-feature (mechanical/plants): 80% CutMix, 20% Mixup"
+                )
+                logger.info("  • Mixed-strategy (others): 30% Mixup, 70% CutMix")
+            elif args.use_cutmix and args.cutmix_alpha > 0:
+                logger.info("--label_smoothing disabled while using CutMix")
+            elif args.mixup_alpha > 0:
+                logger.info("--label_smoothing disabled while using Mixup")
 
     # Determine data directory based on augmentation strategy
     if args.use_online_aug:
@@ -734,6 +756,7 @@ def train(args, model: nn.Module, original_model: nn.Module):
             use_self_distill=args.use_self_distillation,
             distill_temperature=args.distill_temperature,
             distill_alpha=args.distill_alpha,
+            model_name=args.model,
         )
 
         # Validate the model (use EMA weights if enabled)

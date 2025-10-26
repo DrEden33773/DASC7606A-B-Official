@@ -281,6 +281,68 @@ def cutmix_data(
     return mixed_x, y_a, y_b, lam
 
 
+def convmixer_augmentation(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    mixup_alpha: float = 0.5,
+    cutmix_alpha: float = 1.0,
+    device: str = "cpu",
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+    """
+    Apply uniform 50-50 Mixup/CutMix augmentation for ConvMixer models.
+
+    Unlike adaptive augmentation which varies strategy based on class categories,
+    this function treats all classes uniformly with equal probability for Mixup and CutMix.
+    This design is motivated by ConvMixer's architectural properties:
+
+    **Why uniform augmentation for ConvMixer?**
+    1. **Global receptive field**: ConvMixer maintains larger feature maps throughout
+       the network (e.g., 16x16 for patch_size=2 on 32x32 inputs), preserving more
+       spatial details compared to traditional CNNs that aggressively downsample.
+
+    2. **Depthwise + Pointwise separation**: This design allows ConvMixer to learn
+       both local spatial patterns (via depthwise conv) and global channel interactions
+       (via pointwise conv) simultaneously, making it robust to both Mixup and CutMix.
+
+    3. **Simpler is better**: ConvMixer's architecture is intentionally simple and uniform.
+       A uniform augmentation strategy aligns with this design philosophy and avoids
+       overfitting to specific augmentation patterns.
+
+    **Strategy**:
+    - 50% probability: Apply Mixup (preserves global structure)
+    - 50% probability: Apply CutMix (enhances local features)
+
+    Args:
+        x: Input batch of images [batch_size, C, H, W]
+        y: Input batch of labels [batch_size]
+        mixup_alpha: Mixup alpha parameter (default: 0.5)
+        cutmix_alpha: CutMix alpha parameter (default: 1.0)
+        device: Device to perform operations on
+
+    Returns:
+        Tuple of (mixed_x, targets_a, targets_b, lambda):
+            - mixed_x: Augmented images [batch_size, C, H, W]
+            - targets_a: First set of labels [batch_size]
+            - targets_b: Second set of labels (from shuffled batch) [batch_size]
+            - lam: Mixing coefficient (scalar)
+
+    Example:
+        >>> mixed_x, y_a, y_b, lam = convmixer_augmentation(
+        ...     x, y, mixup_alpha=0.5, cutmix_alpha=1.0, device='cuda'
+        ... )
+        >>> loss = lam * criterion(model(mixed_x), y_a) + (1-lam) * criterion(model(mixed_x), y_b)
+
+    Note:
+        Designed specifically for ConvMixer architecture. For other models (ResNet, WRN),
+        consider using `adaptive_augmentation` which adapts to class characteristics.
+    """
+    # Uniform 50-50 selection between Mixup and CutMix
+    if np.random.rand() < 0.5:
+        return mixup_data(x, y, alpha=mixup_alpha, device=device)
+    else:
+        return cutmix_data(x, y, alpha=cutmix_alpha, device=device)
+
+
 def adaptive_augmentation(
     x: torch.Tensor,
     y: torch.Tensor,
@@ -1154,7 +1216,7 @@ def get_train_transforms(
     else:
         raise ValueError(
             f"Unknown augmentation_strength: {augmentation_strength}. "
-            f"Choose from 'light', 'medium', 'strong'."
+            f"Choose from 'light', 'medium', 'strong', 'randaugment'."
         )
 
     return AlbumentationsTransform(augmentation_pipeline)
@@ -1711,6 +1773,7 @@ def train_epoch(
     use_self_distill: bool = False,
     distill_temperature: float = 4.0,
     distill_alpha: float = 0.9,
+    model_name: str = "",
 ) -> Tuple[float, float]:
     """
     Train the model for one epoch with optional mixed precision training, gradient clipping, Mixup, and CutMix.
@@ -1734,14 +1797,15 @@ def train_epoch(
             - 0.0: Disabled
             - 1.0: Recommended for CIFAR-100
         use_cutmix: Whether to use CutMix
+        model_name: Name of the model (used to select augmentation strategy)
 
     Returns:
         Tuple of (average loss, accuracy percentage) for the epoch
 
     Note:
-        If both CutMix and Mixup are enabled, will randomly choose one per batch (40% Mixup, 60% CutMix).
-        This CutMix-prioritized approach leverages strong regularization for fine-grained categories
-        while maintaining Mixup's benefits for small animal classification.
+        - ConvMixer models: Use uniform 50-50 Mixup/CutMix augmentation
+        - Other models (ResNet, WRN, etc.): Use category-adaptive augmentation
+          (40% Mixup, 60% CutMix with class-aware selection)
     """
     model.train()
     running_loss = 0.0
@@ -1756,20 +1820,32 @@ def train_epoch(
     for inputs, labels in progress_bar:
         inputs, labels = inputs.to(device), labels.to(device)
 
-        # Apply data augmentation (category-adaptive or fixed strategy)
+        # Apply data augmentation (model-specific strategy)
         if use_cutmix and cutmix_alpha > 0 and mixup_alpha > 0:
-            # Use category-adaptive augmentation based on batch label distribution
-            # This dynamically selects Mixup/CutMix based on class characteristics:
-            # - Detail-sensitive (human, small animals): Mixup only (alpha=0.4)
-            # - Local-feature (mechanical, plants): 80% CutMix, 20% Mixup
-            # - Mixed-strategy (others): 30% Mixup, 70% CutMix
-            inputs, targets_a, targets_b, lam = adaptive_augmentation(
-                inputs,
-                labels,
-                mixup_alpha=mixup_alpha,
-                cutmix_alpha=cutmix_alpha,
-                device=device,
-            )
+            # ConvMixer: Use uniform 50-50 Mixup/CutMix augmentation
+            # Other models: Use category-adaptive augmentation based on class characteristics
+            if model_name.startswith("convmixer"):
+                # ConvMixer benefits from uniform augmentation strategy
+                # (50% Mixup, 50% CutMix) due to its ability to preserve global details
+                inputs, targets_a, targets_b, lam = convmixer_augmentation(
+                    inputs,
+                    labels,
+                    mixup_alpha=mixup_alpha,
+                    cutmix_alpha=cutmix_alpha,
+                    device=device,
+                )
+            else:
+                # Adaptive augmentation for ResNet, WRN, etc.
+                # - Detail-sensitive (human, small animals): Mixup only (alpha=0.4)
+                # - Local-feature (mechanical, plants): 80% CutMix, 20% Mixup
+                # - Mixed-strategy (others): 30% Mixup, 70% CutMix
+                inputs, targets_a, targets_b, lam = adaptive_augmentation(
+                    inputs,
+                    labels,
+                    mixup_alpha=mixup_alpha,
+                    cutmix_alpha=cutmix_alpha,
+                    device=device,
+                )
         elif use_cutmix and cutmix_alpha > 0:
             # Apply CutMix augmentation only
             inputs, targets_a, targets_b, lam = cutmix_data(

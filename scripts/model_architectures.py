@@ -1406,17 +1406,29 @@ class ConvMixer(nn.Module):
         self._initialize_weights()
 
     def _initialize_weights(self) -> None:
-        """Initialize model weights using standard techniques."""
+        """
+        Initialize model weights for ConvMixer with GELU activation.
+
+        Key differences from standard initialization:
+        1. Use gain=1.0 for GELU (similar to tanh, not relu)
+        2. Use proper variance for Linear layers (Xavier/Kaiming)
+        3. Conv2d: fan_out mode for better gradient flow
+        """
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                # For GELU, use gain closer to 1.0 (not sqrt(2) for ReLU)
+                # GELU behaves similar to tanh/sigmoid at initialization
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="linear")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
+                # Use Kaiming initialization for Linear (not tiny 0.01 std!)
+                nn.init.kaiming_uniform_(
+                    m.weight, a=0, mode="fan_in", nonlinearity="linear"
+                )
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
