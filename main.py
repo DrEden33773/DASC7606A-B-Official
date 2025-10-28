@@ -129,7 +129,7 @@ def parse_args():
     parser.add_argument(
         "--mixup_alpha",
         type=float,
-        default=0.8,  # old: 0.25
+        default=0.25,
         help="Mixup alpha parameter (default: 0.4). "
         "Recommended: 1.0 for CIFAR-100. "
         "Mixup mixes training examples to improve generalization. "
@@ -147,7 +147,7 @@ def parse_args():
     parser.add_argument(
         "--cutmix_alpha",
         type=float,
-        default=1.0,  # old: 0.65
+        default=0.65,
         help="CutMix alpha parameter (default: 1.0 = recommended for CIFAR-100). "
         "Controls the size distribution of cut regions. "
         "1.0 is the standard setting from the paper. "
@@ -171,7 +171,7 @@ def parse_args():
             "convmixer_1536_20",
             "convmixer_1024_20",
         ],
-        default="convmixer_768_32",  # Phase 3: ConvMixer (target F1≥0.85)
+        default="wide_resnet28_12",  # Phase 3: ConvMixer (target F1≥0.85)
         help="Model architecture (all from scratch). "
         "Phase 3 ConvMixer (NEW, target F1≥0.85): convmixer_768_32 (21M) ← Recommended, "
         "convmixer_1536_20 (52M, highest capacity), convmixer_1024_20 (24M, balanced). "
@@ -188,7 +188,7 @@ def parse_args():
     parser.add_argument(
         "--drop_path_rate",
         type=float,
-        default=0.1,
+        default=0.0,
         help="Stochastic Depth (DropPath) rate. "
         "Recommended: 0.1 for WRN, 0.15 for PyramidNet. "
         "Randomly drops residual branches during training to reduce overfitting.",
@@ -233,7 +233,7 @@ def parse_args():
     parser.add_argument(
         "--lr",
         type=float,
-        default=0.002,  # old: 0.001
+        default=0.001,  # old: 0.001
         help="Learning rate",
     )
     parser.add_argument(
@@ -279,7 +279,7 @@ def parse_args():
     parser.add_argument(
         "--use_class_weights",
         action="store_true",
-        default=False,  # ConvMixer does not use class weights
+        default=True,
         help="Use class weights to adjust focus on different classes",
     )
     parser.add_argument(
@@ -292,7 +292,7 @@ def parse_args():
         "--weight_strategy",
         type=str,
         choices=["uniform", "long_board", "long_board_v2", "long_board_v2.5"],
-        default="uniform",  # ConvMixer does not use class weights
+        default="long_board",
         help="Class weighting strategy. Options: "
         "'uniform' (all weights=1.0), "
         "'long_board' (conservative, weight range 0.75-1.6), "
@@ -381,7 +381,7 @@ def parse_args():
     parser.add_argument(
         "--early_stopping_patience",
         type=int,
-        default=35,  # Increased for long-board v2 strategy
+        default=35,
         help="Early stopping patience. Increased to 35 to allow more training before stopping",
     )
     parser.add_argument(
