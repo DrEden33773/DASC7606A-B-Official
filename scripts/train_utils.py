@@ -1599,7 +1599,9 @@ def define_loss_and_optimizer(
         )
 
         if weight_strategy == "long_board":
-            print("✅ Using LONG-BOARD class weighting strategy:")
+            print(
+                "✅ Using LONG-BOARD class weighting strategy (for `training` and `validation` only):"
+            )
             print("   • Extreme high-score (F1≥0.93): weight=0.75 (reduce attention)")
             print("   • High-score (F1 0.88-0.92): weight=0.9 (slight reduction)")
             print("   • Mid-high score (F1 0.80-0.87): weight=1.1 (slight increase)")
